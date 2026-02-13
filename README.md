@@ -29,3 +29,8 @@ This is the easiest way to install and get automatic updates.
 3. Create a folder named `cornell-marginalia`.
 4. Paste the downloaded files into that folder.
 5. Reload Obsidian and enable the plugin.
+
+## Examples
+![Marginalia](assets/marginalia.png) 
+
+![Mobile](assets/mobile.png) 

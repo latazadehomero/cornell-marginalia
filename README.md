@@ -33,4 +33,4 @@ This is the easiest way to install and get automatic updates.
 ## Examples
 ![Marginalia](assets/marginalia.png) 
 
-![Mobile](assets/mobile.png) 
+![Mobile](assets/mobile.jpg) 

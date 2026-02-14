@@ -1,4 +1,4 @@
-import { Plugin } from 'obsidian';
+import { Plugin, App, MarkdownRenderer, Component } from 'obsidian';
 import { RangeSetBuilder } from '@codemirror/state';
 import { 
     EditorView, 
@@ -9,24 +9,42 @@ import {
     WidgetType
 } from '@codemirror/view';
 
-// WIDGET (Lo que se ve al margen)
+// 1. EL WIDGET (Ahora renderiza Markdown real)
 class MarginNoteWidget extends WidgetType {
-    constructor(readonly text: string) { super(); }
+    // Necesitamos recibir la 'app' para poder renderizar links
+    constructor(readonly text: string, readonly app: App) { super(); }
 
     toDOM(view: EditorView): HTMLElement {
         const div = document.createElement("div");
         div.className = "cm-cornell-margin";
-        div.textContent = this.text;
-        // Truco: Si le das click a la nota al margen, no hace nada raro
-        div.onclick = (e) => e.preventDefault();
+        
+
+        MarkdownRenderer.render(
+            this.app,
+            this.text,
+            div,
+            "", 
+            new Component() 
+        );
+
+        // Evitar que el click en la nota active la edición inmediata (opcional)
+        // Pero permitimos click en links
+        div.onclick = (e) => {
+            const target = e.target as HTMLElement;
+            // Si el click fue en un link, dejamos que pase. Si no, prevenimos.
+            if (target.tagName !== 'A') {
+                e.preventDefault();
+            }
+        };
+        
         return div;
     }
 
-    ignoreEvent() { return false; }
+    ignoreEvent() { return false; } 
 }
 
-// PLUGIN DE VISTA (Detecta %%> texto %%)
-const cornellPlugin = ViewPlugin.fromClass(class {
+// 2. EL PLUGIN DE VISTA (Ahora recibe la 'app')
+const createCornellExtension = (app: App) => ViewPlugin.fromClass(class {
     decorations: DecorationSet;
 
     constructor(view: EditorView) {
@@ -46,7 +64,7 @@ const cornellPlugin = ViewPlugin.fromClass(class {
 
         for (const { from, to } of view.visibleRanges) {
             const text = state.doc.sliceString(from, to);
-            // NUEVA REGEX: Busca %%> ... %%
+            // Regex para buscar %%> ... %%
             const regex = /%%>(.*?)%%/g;
             let match;
 
@@ -54,7 +72,6 @@ const cornellPlugin = ViewPlugin.fromClass(class {
                 const start = from + match.index;
                 const end = start + match[0].length;
 
-                // Lógica "Smart": Si el cursor toca el comentario, muéstralo para editar
                 let isCursorInside = false;
                 for (const range of cursorRanges) {
                     if (range.from >= start && range.to <= end) {
@@ -63,12 +80,11 @@ const cornellPlugin = ViewPlugin.fromClass(class {
                     }
                 }
 
-                if (isCursorInside) {
-                    continue; // No ocultar si estamos editando
-                }
+                if (isCursorInside) continue;
 
                 builder.add(start, end, Decoration.replace({
-                    widget: new MarginNoteWidget(match[1])
+                    // Pasamos la APP al widget aquí abajo
+                    widget: new MarginNoteWidget(match[1], app)
                 }));
             }
         }
@@ -78,9 +94,11 @@ const cornellPlugin = ViewPlugin.fromClass(class {
     decorations: v => v.decorations
 });
 
+// 3. EL PLUGIN PRINCIPAL
 export default class CornellMarginalia extends Plugin {
     async onload() {
-        console.log("Cornell Marginalia (Modo Comentarios) cargado 🩺");
-        this.registerEditorExtension(cornellPlugin);
+        console.log("Cornell Marginalia (Rich Text) cargado 🩺");
+        // Al registrar la extensión, le pasamos 'this.app'
+        this.registerEditorExtension(createCornellExtension(this.app));
     }
 }

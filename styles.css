@@ -1,68 +1,67 @@
-/* --- ESCRITORIO (Pantallas grandes) --- */
-@media (min-width: 768px) {
-    /* Hacer espacio a la izquierda */
-    .markdown-source-view.mod-cm6 .cm-scroller {
-        padding-left: 220px !important;
-    }
-
-    .markdown-source-view.mod-cm6 .cm-content {
-        max-width: 900px;
-        margin: 0 auto 0 0;
-    }
-
-    /* La nota flotando a la izquierda */
-    .cm-cornell-margin {
-        position: absolute;
-        left: -210px;
-        width: 190px;
-        top: 0;
-        
-        font-family: var(--font-monospace);
-        font-size: 0.85em;
-        text-align: right;
-        line-height: 1.3;
-        color: var(--text-accent);
-        
-        border-right: 2px solid var(--text-muted);
-        padding-right: 10px;
-        
-        user-select: none;
-        pointer-events: none;
-    }
+/* 1. HACER ESPACIO (Mover el "papel" a la derecha) */
+.markdown-source-view.mod-cm6 .cm-scroller {
+    /* Ajusta este valor según tu pantalla. 
+       Esto crea la "Columna Izquierda" vacía. */
+    padding-left: 220px !important; 
 }
 
-/* --- MÓVIL (Celulares) --- */
-@media (max-width: 767px) {
-    /* 1. Quitamos el margen gigante de la izquierda */
+/* Opcional: Limitar el ancho del texto para que no sea eterno de leer */
+.markdown-source-view.mod-cm6 .cm-content {
+    max-width: 900px; 
+    margin: 0 auto 0 0; /* Alinear a la izquierda del contenedor desplazado */
+}
+
+
+/* 2. ESTILO DE LA NOTA AL MARGEN (El Widget) */
+.cm-cornell-margin {
+    position: absolute; /* Magia absoluta */
+    left: -210px;       /* Moverlo al espacio vacío que creamos */
+    width: 190px;       /* Ancho de la nota */
+    
+    /* Tipografía y Color */
+    font-family: var(--font-monospace); /* O 'Handwriting' si tienes una */
+    font-size: 0.85em;
+    color: var(--text-accent); /* Usa el color de acento de tu tema */
+    text-align: right;         /* Alineado a la derecha, pegado a la línea divisoria */
+    line-height: 1.2;
+    
+    /* Decoración visual */
+    border-right: 2px solid var(--text-muted); /* La línea vertical del Cornell */
+    padding-right: 10px;
+    top: 0; /* Alinear con la línea superior del texto */
+    
+    /* Para que no moleste al hacer click */
+    user-select: none; 
+    pointer-events: none;
+}
+
+/* 3. RESPONSIVE (En móvil, que se vea normal) */
+@media (max-width: 768px) {
     .markdown-source-view.mod-cm6 .cm-scroller {
         padding-left: 10px !important;
     }
-
-    /* 2. Forzamos a la nota a flotar a la derecha */
     .cm-cornell-margin {
-        display: block;       /* Comportamiento de bloque... */
-        float: right;         /* ...pero flotando a la derecha */
-        width: 40%;           /* Ocupa el 40% de la pantalla */
-        margin-left: 10px;    /* Espacio entre texto y nota */
-        margin-bottom: 5px;
-        
-        /* Estética compacta */
-        background-color: var(--background-primary-alt);
-        border-right: 2px solid var(--interactive-accent); /* Línea a la derecha */
-        border-left: none; /* Quitamos borde izquierdo */
-        
-        padding: 4px 8px;
-        border-radius: 4px;
-        
-        /* Texto más pequeño para que quepa */
-        font-family: var(--font-interface);
-        font-size: 0.70em; 
-        line-height: 1.2;
-        color: var(--text-muted);
+        position: relative;
+        left: 0;
+        width: 100%;
         text-align: left;
-        
-        /* Asegurar que no tape el texto si es muy largo */
-        clear: right; 
-        z-index: 10;
+        border-right: none;
+        border-bottom: 1px solid var(--text-muted);
+        color: var(--text-faint);
+        display: block;
+        margin-bottom: 5px;
     }
+}/*
+
+/* Corrección para el Markdown Renderer */
+.cm-cornell-margin p {
+    margin: 0 !important;
+    display: inline; /* O block, según prefieras */
+}
+
+/* Hacer que los links dentro de la nota se vean bien */
+.cm-cornell-margin a {
+    color: var(--text-accent);
+    text-decoration: underline;
+    pointer-events: auto; /* Asegura que el link sea clickeable */
 }

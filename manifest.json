@@ -1,11 +1,10 @@
 {
-	"id": "Marginalia",
-	"name": "Marginalia",
-	"version": "1.0.2",
+	"id": "cornell-marginalia",
+	"name": "Cornell Marginalia",
+	"version": "1.2.0",
 	"minAppVersion": "0.15.0",
-	"description": "Crea pequeños comentarios en tus notas",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Renders Cornell-style marginal notes using the %%> ... %% syntax. Keeps your notes clean for flashcards and export.",
+	"author": "Latazadehomero",
+	"authorUrl": "https://github.com/latazadehomero",
 	"isDesktopOnly": false
 }

@@ -60,6 +60,18 @@ Turn your margin notes into Anki/Spaced Repetition cards instantly.
 * **Typography:** Change font size and font family to match your style.
 
 ---
+## ⚡ Shortcuts & Commands
+
+You don't need to type `%%>` manually every time! The plugin includes a smart command to speed up your workflow.
+
+### **Insert Margin Note**
+This command intelligently handles the syntax based on your cursor position:
+* **No selection:** Inserts `%%>  %%` and places your cursor **inside**, ready to type.
+* **Text selected:** Wraps your selection automatically (e.g., `%%> Important Concept %%`).
+
+#### **How to set it up:**
+1.  **Command Palette:** Press `Ctrl/Cmd + P` and search for `Cornell Marginalia: Insert Margin Note`.
+2.  **Hotkey (Recommended):** Go to **Settings > Hotkeys**, search for "Cornell", and assign your favorite shortcut (e.g., `Ctrl + M`).
 
 ## 📦 Installation
 

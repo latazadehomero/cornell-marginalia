@@ -1,8 +1,4 @@
-¡Excelente! Tu `README.md` actual es funcional pero muy básico. Ahora que tu plugin tiene **superpoderes** (colores, blur, flashcards, sliders, etc.), necesitamos un README que venda todas esas funcionalidades.
 
-Aquí tienes una propuesta profesional, estructurada y visualmente atractiva para copiar y pegar en tu repositorio. He añadido las insignias (badges), una tabla de características y las instrucciones nuevas.
-
----
 
 # Cornell Marginalia for Obsidian 🩺
 

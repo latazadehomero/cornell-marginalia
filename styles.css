@@ -52,3 +52,18 @@
 .cm-cornell-margin * { pointer-events: auto; }
 .cm-cornell-margin p { margin: 0 !important; display: inline; }
 .cm-cornell-margin a { color: inherit; text-decoration: underline; }
+
+/* --- ACTIVE RECALL BLUR (VERSIÓN BLOQUE/LÍNEA) --- */
+/* Se aplica a toda la línea contenedora */
+.cornell-blur {
+    color: transparent !important;
+    text-shadow: 0 0 12px var(--text-normal);
+    cursor: help;
+    transition: all 0.3s ease;
+}
+
+/* Al pasar el mouse por la línea, revelamos TODO el texto */
+.cornell-blur:hover {
+    color: var(--text-normal) !important;
+    text-shadow: none;
+}

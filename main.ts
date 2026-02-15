@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, MarkdownRenderer, Component, Editor } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, MarkdownRenderer, Component, Editor, Notice, MarkdownView } from 'obsidian';
 import { RangeSetBuilder } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { 
@@ -10,12 +10,10 @@ import {
     WidgetType
 } from '@codemirror/view';
 
-// --- ESTRUCTURAS DE DATOS ---
-
-// Definimos qué es una "Etiqueta Cornell"
+// --- ESTRUCTURAS ---
 interface CornellTag {
-    prefix: string; // Ej: "?"
-    color: string;  // Ej: "#ff9900"
+    prefix: string; 
+    color: string;  
 }
 
 interface CornellSettings {
@@ -24,10 +22,9 @@ interface CornellSettings {
     marginWidth: number;
     fontSize: string;
     fontFamily: string;
-    tags: CornellTag[]; // NUEVO: Lista de etiquetas personalizables
+    tags: CornellTag[];
 }
 
-// Defaults en Inglés como pediste
 const DEFAULT_SETTINGS: CornellSettings = {
     ignoredFolders: 'Templates, Archivos/Excluidos',
     alignment: 'left', 
@@ -35,16 +32,15 @@ const DEFAULT_SETTINGS: CornellSettings = {
     fontSize: '0.85em',
     fontFamily: 'inherit',
     tags: [
-        { prefix: '!', color: '#ffea00' }, // Important (Yellow)
-        { prefix: '?', color: '#ff9900' }, // Question (Orange)
-        { prefix: 'X-', color: '#ff4d4d' }, // Correction (Red)
-        { prefix: 'V-', color: '#00cc66' }  // Reviewed (Green)
+        { prefix: '!', color: '#ffea00' }, 
+        { prefix: '?', color: '#ff9900' }, 
+        { prefix: 'X-', color: '#ff4d4d' }, 
+        { prefix: 'V-', color: '#00cc66' }  
     ]
 }
 
-// --- WIDGET ---
+// --- WIDGET DE MARGEN ---
 class MarginNoteWidget extends WidgetType {
-    // Ahora aceptamos un color opcional
     constructor(
         readonly text: string, 
         readonly app: App, 
@@ -55,14 +51,9 @@ class MarginNoteWidget extends WidgetType {
         const div = document.createElement("div");
         div.className = "cm-cornell-margin";
         
-        // Si hay un color personalizado (detectado por prefijo), lo aplicamos inline
-        // Esto sobreescribe las variables CSS por defecto para ESTA nota específica
         if (this.customColor) {
-            div.style.borderColor = this.customColor; // Cambia el borde
-            div.style.color = this.customColor;       // Cambia el texto
-            
-            // Opcional: Si prefieres que el texto siga siendo del color normal y solo cambie el borde,
-            // comenta la linea de 'div.style.color'.
+            div.style.borderColor = this.customColor;
+            div.style.color = this.customColor;       
         }
 
         MarkdownRenderer.render(this.app, this.text, div, "", new Component());
@@ -77,8 +68,8 @@ class MarginNoteWidget extends WidgetType {
     ignoreEvent() { return false; } 
 }
 
-// --- EXTENSIÓN ---
-const createCornellExtension = (app: App, settings: CornellSettings) => ViewPlugin.fromClass(class {
+// --- EXTENSIÓN DE VISTA ---
+const createCornellExtension = (app: App, settings: CornellSettings, getActiveRecallMode: () => boolean) => ViewPlugin.fromClass(class {
     decorations: DecorationSet;
 
     constructor(view: EditorView) {
@@ -94,6 +85,7 @@ const createCornellExtension = (app: App, settings: CornellSettings) => ViewPlug
     buildDecorations(view: EditorView) {
         const builder = new RangeSetBuilder<Decoration>();
         const file = app.workspace.getActiveFile();
+        
         if (file) {
             const ignoredPaths = settings.ignoredFolders.split(',').map(s => s.trim()).filter(s => s.length > 0);
             for (const path of ignoredPaths) {
@@ -103,6 +95,7 @@ const createCornellExtension = (app: App, settings: CornellSettings) => ViewPlug
 
         const { state } = view;
         const cursorRanges = state.selection.ranges;
+        const isRecallMode = getActiveRecallMode(); 
 
         for (const { from, to } of view.visibleRanges) {
             const text = state.doc.sliceString(from, to);
@@ -110,19 +103,20 @@ const createCornellExtension = (app: App, settings: CornellSettings) => ViewPlug
             let match;
 
             while ((match = regex.exec(text))) {
-                const start = from + match.index;
-                const end = start + match[0].length;
+                const matchStart = from + match.index;
+                const matchEnd = matchStart + match[0].length;
                 const noteContent = match[1];
 
                 const tree = syntaxTree(state);
-                const node = tree.resolve(start, 1);
+                const node = tree.resolve(matchStart, 1);
                 const isCode = node.name.includes("code") || node.name.includes("Code") || node.name.includes("math");
-                
                 if (isCode) continue;
 
+                // Check de Cursor
                 let isCursorInside = false;
+                const line = state.doc.lineAt(matchStart);
                 for (const range of cursorRanges) {
-                    if (range.from >= start && range.to <= end) {
+                    if (range.from >= line.from && range.to <= line.to) {
                         isCursorInside = true;
                         break;
                     }
@@ -130,19 +124,24 @@ const createCornellExtension = (app: App, settings: CornellSettings) => ViewPlug
 
                 if (isCursorInside) continue;
 
-                // --- LÓGICA DE DETECCIÓN DE COLOR ---
-                let matchedColor = null;
-                const trimmedContent = noteContent.trim(); // Ignoramos espacios al principio
+                // --- LÓGICA DE ACTIVE RECALL (BLUR) ---
+                if (isRecallMode && noteContent.trim().endsWith(";;")) {
+                    builder.add(line.from, line.from, Decoration.line({
+                        class: "cornell-blur"
+                    }));
+                }
 
-                // Buscamos si el texto empieza con alguno de los prefijos configurados
+                // --- LÓGICA DE MARGINALIA ---
+                let matchedColor = null;
+                const trimmedContent = noteContent.trim();
                 for (const tag of settings.tags) {
                     if (trimmedContent.startsWith(tag.prefix)) {
                         matchedColor = tag.color;
-                        break; // Encontramos coincidencia, dejamos de buscar
+                        break;
                     }
                 }
 
-                builder.add(start, end, Decoration.replace({
+                builder.add(matchStart, matchEnd, Decoration.replace({
                     widget: new MarginNoteWidget(noteContent, app, matchedColor)
                 }));
             }
@@ -156,161 +155,149 @@ const createCornellExtension = (app: App, settings: CornellSettings) => ViewPlug
 // --- SETTINGS TAB ---
 class CornellSettingTab extends PluginSettingTab {
     plugin: CornellMarginalia;
-
-    constructor(app: App, plugin: CornellMarginalia) {
-        super(app, plugin);
-        this.plugin = plugin;
-    }
+    constructor(app: App, plugin: CornellMarginalia) { super(app, plugin); this.plugin = plugin; }
 
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
         containerEl.createEl('h2', { text: 'Cornell Marginalia Settings' });
 
-        // --- SECCIÓN GENERAL ---
         containerEl.createEl('h3', { text: 'General Appearance' });
+        new Setting(containerEl).setName('Margin Alignment').addDropdown(d => d.addOption('left', 'Left').addOption('right', 'Right').setValue(this.plugin.settings.alignment).onChange(async v => { this.plugin.settings.alignment = v as any; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
+        new Setting(containerEl).setName('Margin Width (%)').addSlider(s => s.setLimits(15, 60, 1).setValue(this.plugin.settings.marginWidth).setDynamicTooltip().onChange(async v => { this.plugin.settings.marginWidth = v; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
+        new Setting(containerEl).setName('Font Size').addText(t => t.setValue(this.plugin.settings.fontSize).onChange(async v => { this.plugin.settings.fontSize = v; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
+        new Setting(containerEl).setName('Font Family').addText(t => t.setValue(this.plugin.settings.fontFamily).onChange(async v => { this.plugin.settings.fontFamily = v; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
 
-        new Setting(containerEl)
-            .setName('Margin Alignment')
-            .setDesc('Left (Classic Cornell) or Right (Modern Textbook).')
-            .addDropdown(dropdown => dropdown
-                .addOption('left', 'Left Side (Classic)')
-                .addOption('right', 'Right Side')
-                .setValue(this.plugin.settings.alignment)
-                .onChange(async (value) => {
-                    this.plugin.settings.alignment = value as 'left' | 'right';
-                    await this.plugin.saveSettings();
-                    this.plugin.updateStyles();
-                }));
-
-        new Setting(containerEl)
-            .setName('Margin Width (%)')
-            .addSlider(slider => slider
-                .setLimits(15, 60, 1)
-                .setValue(this.plugin.settings.marginWidth)
-                .setDynamicTooltip()
-                .onChange(async (value) => {
-                    this.plugin.settings.marginWidth = value;
-                    await this.plugin.saveSettings();
-                    this.plugin.updateStyles();
-                }));
-
-        new Setting(containerEl)
-            .setName('Font Size')
-            .addText(text => text
-                .setPlaceholder('0.85em')
-                .setValue(this.plugin.settings.fontSize)
-                .onChange(async (value) => {
-                    this.plugin.settings.fontSize = value;
-                    await this.plugin.saveSettings();
-                    this.plugin.updateStyles();
-                }));
-
-        new Setting(containerEl)
-            .setName('Font Family')
-            .addText(text => text
-                .setPlaceholder('inherit')
-                .setValue(this.plugin.settings.fontFamily)
-                .onChange(async (value) => {
-                    this.plugin.settings.fontFamily = value;
-                    await this.plugin.saveSettings();
-                    this.plugin.updateStyles();
-                }));
-
-        // --- SECCIÓN DE ETIQUETAS DE COLOR (NUEVO) ---
-        containerEl.createEl('h3', { text: 'Color Tags & Categories' });
-        containerEl.createEl('p', { text: 'Define prefixes to automatically color-code your notes. E.g., start a note with "?" to make it orange.', cls: 'setting-item-description' });
-
-        // 1. Listar etiquetas existentes
+        containerEl.createEl('h3', { text: 'Color Tags' });
         this.plugin.settings.tags.forEach((tag, index) => {
-            const setting = new Setting(containerEl)
-                .setName(`Tag ${index + 1}`)
-                .setDesc('Prefix & Color')
-                
-                // Input para el Prefijo (Ej: "?")
-                .addText(text => text
-                    .setPlaceholder('Prefix (e.g. ?)')
-                    .setValue(tag.prefix)
-                    .onChange(async (value) => {
-                        this.plugin.settings.tags[index].prefix = value;
-                        await this.plugin.saveSettings();
-                        // No necesitamos updateStyles(), pero sí refrescar el editor
-                        this.plugin.app.workspace.updateOptions();
-                    }))
-                
-                // Picker para el Color
-                .addColorPicker(color => color
-                    .setValue(tag.color)
-                    .onChange(async (value) => {
-                        this.plugin.settings.tags[index].color = value;
-                        await this.plugin.saveSettings();
-                        this.plugin.app.workspace.updateOptions();
-                    }))
-                
-                // Botón de borrar
-                .addButton(btn => btn
-                    .setIcon('trash')
-                    .setTooltip('Delete Tag')
-                    .onClick(async () => {
-                        this.plugin.settings.tags.splice(index, 1);
-                        await this.plugin.saveSettings();
-                        // Refrescamos la pestaña de settings para que desaparezca la fila
-                        this.display();
-                        this.plugin.app.workspace.updateOptions();
-                    }));
+            new Setting(containerEl).setName(`Tag ${index + 1}`).addText(t => t.setValue(tag.prefix).onChange(async v => { this.plugin.settings.tags[index].prefix = v; await this.plugin.saveSettings(); this.plugin.app.workspace.updateOptions(); })).addColorPicker(c => c.setValue(tag.color).onChange(async v => { this.plugin.settings.tags[index].color = v; await this.plugin.saveSettings(); this.plugin.app.workspace.updateOptions(); })).addButton(b => b.setIcon('trash').onClick(async () => { this.plugin.settings.tags.splice(index, 1); await this.plugin.saveSettings(); this.display(); this.plugin.app.workspace.updateOptions(); }));
         });
-
-        // 2. Botón para añadir nueva etiqueta
-        new Setting(containerEl)
-            .addButton(btn => btn
-                .setButtonText('Add New Tag')
-                .setCta()
-                .onClick(async () => {
-                    this.plugin.settings.tags.push({ prefix: 'New', color: '#888888' });
-                    await this.plugin.saveSettings();
-                    this.display();
-                }));
-
-        // --- SECCIÓN AVANZADA ---
-        containerEl.createEl('h3', { text: 'Advanced' });
+        new Setting(containerEl).addButton(b => b.setButtonText('Add Tag').onClick(async () => { this.plugin.settings.tags.push({ prefix: 'New', color: '#888' }); await this.plugin.saveSettings(); this.display(); }));
         
-        new Setting(containerEl)
-            .setName('Ignored Folders')
-            .addTextArea(text => text
-                .setPlaceholder('Templates')
-                .setValue(this.plugin.settings.ignoredFolders)
-                .onChange(async (value) => {
-                    this.plugin.settings.ignoredFolders = value;
-                    await this.plugin.saveSettings();
-                    this.plugin.app.workspace.updateOptions();
-                }));
+        containerEl.createEl('h3', { text: 'Advanced' });
+        new Setting(containerEl).setName('Ignored Folders').addTextArea(t => t.setValue(this.plugin.settings.ignoredFolders).onChange(async v => { this.plugin.settings.ignoredFolders = v; await this.plugin.saveSettings(); this.plugin.app.workspace.updateOptions(); }));
     }
 }
 
 // --- PLUGIN PRINCIPAL ---
 export default class CornellMarginalia extends Plugin {
     settings: CornellSettings;
+    activeRecallMode: boolean = false; 
+    ribbonIcon: HTMLElement;
 
     async onload() {
         await this.loadSettings();
         this.updateStyles(); 
         this.addSettingTab(new CornellSettingTab(this.app, this));
-        this.registerEditorExtension(createCornellExtension(this.app, this.settings));
+        
+        this.registerEditorExtension(createCornellExtension(this.app, this.settings, () => this.activeRecallMode));
+
+        this.ribbonIcon = this.addRibbonIcon('eye', 'Toggle Active Recall Mode', (evt: MouseEvent) => {
+            this.toggleActiveRecall();
+        });
 
         this.addCommand({
             id: 'insert-cornell-note',
             name: 'Insert Margin Note',
             editorCallback: (editor: Editor) => {
                 const selection = editor.getSelection();
-                if (selection) {
-                    editor.replaceSelection(`%%> ${selection} %%`);
-                } else {
+                if (selection) editor.replaceSelection(`%%> ${selection} %%`);
+                else {
                     editor.replaceSelection(`%%>  %%`);
                     const cursor = editor.getCursor();
                     editor.setCursor({ line: cursor.line, ch: cursor.ch - 3 });
                 }
             }
         });
+
+        this.addCommand({
+            id: 'generate-flashcards-sr',
+            name: 'Flashcards Generation (Spaced Repetition)',
+            editorCallback: (editor: Editor, view: MarkdownView) => {
+                this.generateFlashcards(editor);
+            }
+        });
+    }
+
+    toggleActiveRecall() {
+        this.activeRecallMode = !this.activeRecallMode;
+        new Notice(this.activeRecallMode ? 'Active Recall Mode: ON 🙈' : 'Active Recall Mode: OFF 👁️');
+        
+        if (this.activeRecallMode) {
+            this.ribbonIcon.setAttribute('aria-label', 'Disable Active Recall');
+            this.app.workspace.updateOptions();
+        } else {
+            this.ribbonIcon.setAttribute('aria-label', 'Enable Active Recall');
+            this.app.workspace.updateOptions();
+        }
+    }
+
+    // --- LÓGICA DE FLASHCARDS INTELIGENTE ---
+    generateFlashcards(editor: Editor) {
+        const content = editor.getValue();
+        const headerText = "### Flashcards";
+        const lines = content.split('\n');
+        
+        // 1. Encontrar todas las flashcards potenciales en el texto (las que tienen ;;)
+        const foundFlashcards: Set<string> = new Set();
+        const regex = /^(.*?)\s*%%>\s*(.*?);;\s*%%/; 
+
+        lines.forEach(line => {
+            const match = line.match(regex);
+            if (match) {
+                const answer = match[1].trim();   
+                const question = match[2].trim(); 
+                if (answer && question) {
+                    foundFlashcards.add(`${question} :: ${answer}`);
+                }
+            }
+        });
+
+        if (foundFlashcards.size === 0) {
+            new Notice('No active recall notes (ending in ;;) found.');
+            return;
+        }
+
+        // 2. Comprobar si ya existe la sección ### Flashcards
+        let headerLineIndex = -1;
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim() === headerText) {
+                headerLineIndex = i;
+                break;
+            }
+        }
+
+        let newFlashcards: string[] = [];
+
+        if (headerLineIndex !== -1) {
+            // 3a. Si la sección existe, leemos qué hay debajo para no duplicar
+            const existingContent = lines.slice(headerLineIndex + 1).join('\n');
+            
+            foundFlashcards.forEach(card => {
+                // Solo añadimos si NO está ya en la sección de flashcards
+                if (!existingContent.includes(card)) {
+                    newFlashcards.push(card);
+                }
+            });
+
+            if (newFlashcards.length > 0) {
+                // Insertamos solo las nuevas AL FINAL del archivo
+                const textToAppend = '\n' + newFlashcards.join('\n');
+                const lastLine = editor.lineCount();
+                editor.replaceRange(textToAppend, { line: lastLine, ch: 0 });
+                new Notice(`Added ${newFlashcards.length} new flashcards.`);
+            } else {
+                new Notice('All flashcards are already up to date!');
+            }
+
+        } else {
+            // 3b. Si la sección NO existe, la creamos con todas las cartas encontradas
+            newFlashcards = Array.from(foundFlashcards);
+            const textToAppend = `\n\n${headerText}\n${newFlashcards.join('\n')}`;
+            const lastLine = editor.lineCount();
+            editor.replaceRange(textToAppend, { line: lastLine, ch: 0 });
+            new Notice(`Generated section with ${newFlashcards.length} flashcards.`);
+        }
     }
 
     updateStyles() {
@@ -337,11 +324,6 @@ export default class CornellMarginalia extends Plugin {
         }
     }
 
-    async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    }
-
-    async saveSettings() {
-        await this.saveData(this.settings);
-    }
+    async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
+    async saveSettings() { await this.saveData(this.settings); }
 }

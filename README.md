@@ -30,6 +30,8 @@ This is the easiest way to install and get automatic updates.
 4. Paste the downloaded files into that folder.
 5. Reload Obsidian and enable the plugin.
 
+![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support%20my%20work-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=white)](https://buymeacoffee.com/latazadehomero)
+
 ## Examples
 
 <p align="center">

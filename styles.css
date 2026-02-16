@@ -53,6 +53,11 @@
 .cm-cornell-margin p { margin: 0 !important; display: inline; }
 .cm-cornell-margin a { color: inherit; text-decoration: underline; }
 
+/* Forzar que el contenido herede el color del borde/contenedor */
+.cm-cornell-margin * {
+    color: inherit !important;
+}
+
 /* --- ACTIVE RECALL BLUR (VERSIÓN BLOQUE/LÍNEA) --- */
 /* Se aplica a toda la línea contenedora */
 .cornell-blur {
@@ -66,4 +71,34 @@
 .cornell-blur:hover {
     color: var(--text-normal) !important;
     text-shadow: none;
+}
+
+
+/* --- MOBILE SUPPORT (BETA) --- */
+/* Si la pantalla es pequeña (celular/tablet vertical) */
+@media (max-width: 768px) {
+    .cm-cornell-margin {
+        position: relative !important; /* Ya no es absoluto */
+        width: 100% !important;        /* Ocupa todo el ancho */
+        left: auto !important;
+        right: auto !important;
+        top: auto !important;
+        
+        /* Lo convertimos en un bloque debajo del texto */
+        display: block;
+        margin-top: 5px;
+        margin-bottom: 15px;
+        
+        /* CORRECCIÓN: Usamos 'currentColor' para que el borde herede 
+           el color de la nota (amarillo, rojo, etc.) y no el del tema */
+        border-left: 4px solid currentColor !important; 
+        border-right: none !important;
+        
+        background-color: var(--background-secondary);
+        border-radius: 4px;
+        padding: 8px 12px;
+        text-align: left !important;
+        
+        pointer-events: auto;
+    }
 }

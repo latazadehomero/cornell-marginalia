@@ -31,6 +31,7 @@ interface MarginaliaItem {
     color: string;
     file: TFile;
     line: number;
+    blockId: string | null; // <- para luego arrastrar
 }
 
 const DEFAULT_SETTINGS: CornellSettings = {
@@ -184,7 +185,7 @@ class CornellNotesView extends ItemView {
 
     async onOpen() {
         this.renderUI();
-        await this.scanNotes(); // Escanear al abrir
+        await this.scanNotes();
     }
 
     renderUI() {
@@ -200,7 +201,6 @@ class CornellNotesView extends ItemView {
         const tabVault = controlsDiv.createEl("button", { text: "All Vault", cls: this.currentTab === 'vault' ? 'cornell-tab-active' : '' });
         const btnRefresh = controlsDiv.createEl("button", { text: "🔄", title: "Refresh data" });
 
-        // Contenedor donde irán los resultados
         container.createDiv({ cls: 'cornell-sidebar-content' });
 
         tabCurrent.onclick = async () => {
@@ -221,7 +221,6 @@ class CornellNotesView extends ItemView {
         };
     }
 
-    // --- EL MOTOR DE BÚSQUEDA ---
     async scanNotes() {
         const contentDiv = this.containerEl.querySelector('.cornell-sidebar-content') as HTMLElement;
         if (!contentDiv) return;
@@ -230,7 +229,7 @@ class CornellNotesView extends ItemView {
         contentDiv.createEl('p', { text: 'Scanning...', cls: 'cornell-sidebar-empty' });
 
         const results: Record<string, MarginaliaItem[]> = {};
-        const defaultColor = 'var(--text-accent)'; // Color por defecto si no tiene tag
+        const defaultColor = 'var(--text-accent)'; 
 
         let filesToScan: TFile[] = [];
         if (this.currentTab === 'current') {
@@ -238,13 +237,11 @@ class CornellNotesView extends ItemView {
             if (activeFile) filesToScan.push(activeFile);
         } else {
             filesToScan = this.plugin.app.vault.getMarkdownFiles();
-            // Filtrar carpetas ignoradas
             const ignoredPaths = this.plugin.settings.ignoredFolders.split(',').map(s => s.trim()).filter(s => s.length > 0);
             filesToScan = filesToScan.filter(f => !ignoredPaths.some(p => f.path.startsWith(p)));
         }
 
         for (const file of filesToScan) {
-            // cachedRead es super rápido porque lee la memoria interna de Obsidian
             const content = await this.plugin.app.vault.cachedRead(file);
             const lines = content.split('\n');
             
@@ -256,7 +253,6 @@ class CornellNotesView extends ItemView {
                 while ((match = lineRegex.exec(line)) !== null) {
                     let noteContent = match[1].trim();
                     
-                    // Si es una flashcard (termina en ;;), limpiamos eso para la vista
                     if (noteContent.endsWith(';;')) {
                         noteContent = noteContent.slice(0, -2).trim();
                     }
@@ -274,12 +270,17 @@ class CornellNotesView extends ItemView {
 
                     if (finalText.length === 0) continue;
 
+                    // NUEVO: Buscar si la línea ya tiene un Block ID (^algo)
+                    const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)\s*$/);
+                    const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
+
                     if (!results[matchedColor]) results[matchedColor] = [];
                     results[matchedColor].push({
                         text: finalText,
                         color: matchedColor,
                         file: file,
-                        line: i // Guardamos la línea para poder viajar a ella
+                        line: i,
+                        blockId: existingBlockId // <- Lo guardamos en memoria
                     });
                 }
             }
@@ -288,7 +289,6 @@ class CornellNotesView extends ItemView {
         this.renderResults(results, contentDiv);
     }
 
-// --- RENDERIZADO VISUAL Y NAVEGACIÓN ---
     renderResults(results: Record<string, MarginaliaItem[]>, container: HTMLElement) {
         container.empty();
         let totalFound = 0;
@@ -297,13 +297,11 @@ class CornellNotesView extends ItemView {
             if (items.length === 0) continue;
             totalFound += items.length;
 
-            // 1. Cabecera del Grupo (El punto de color)
             const groupHeader = container.createDiv({ cls: 'cornell-sidebar-group' });
             const colorDot = groupHeader.createSpan({ cls: 'cornell-sidebar-color-dot' });
             colorDot.style.backgroundColor = color;
             groupHeader.createSpan({ text: `${items.length} notes` });
 
-            // 2. Elementos de la lista
             for (const item of items) {
                 const itemDiv = container.createDiv({ cls: 'cornell-sidebar-item' });
                 itemDiv.style.borderLeftColor = color;
@@ -311,18 +309,52 @@ class CornellNotesView extends ItemView {
                 itemDiv.createDiv({ cls: 'cornell-sidebar-item-text', text: item.text });
                 itemDiv.createDiv({ cls: 'cornell-sidebar-item-meta', text: `${item.file.basename} (L${item.line + 1})` });
 
-                // 3. EVENTO DE CLIC (Viajar a la nota - Solución Nativa)
                 itemDiv.onclick = async () => {
                     const leaf = this.plugin.app.workspace.getLeaf(false);
-                    // eState le dice a Obsidian que haga scroll automático a esa línea
                     await leaf.openFile(item.file, { eState: { line: item.line } });
                 };
+
+                // EVENTO DRAG & DROP INSTANTÁNEO
+                itemDiv.setAttr('draggable', 'true');
+                
+                itemDiv.addEventListener('dragstart', (event: DragEvent) => {
+                    if (!event.dataTransfer) return;
+                    event.dataTransfer.effectAllowed = 'copy';
+
+                    let targetId = item.blockId;
+
+                    // Si no tiene ID, lo creamos en memoria y lanzamos la inyección fantasma
+                    if (!targetId) {
+                        targetId = Math.random().toString(36).substring(2, 8);
+                        item.blockId = targetId; 
+                        
+                        // Inyección en segundo plano (Nota: sin await)
+                        this.injectBackgroundBlockId(item.file, item.line, targetId);
+                    }
+
+                    // Formamos el enlace
+                    const dragPayload = `[[${item.file.basename}#^${targetId}|${item.text}]]`;
+                    event.dataTransfer.setData('text/plain', dragPayload);
+                });
             }
         }
 
         if (totalFound === 0) {
             container.createEl('p', { text: 'No marginalia found.', cls: 'cornell-sidebar-empty' });
         }
+    }
+
+    // --- INYECCIÓN FANTASMA EN SEGUNDO PLANO ---
+    async injectBackgroundBlockId(file: TFile, lineIndex: number, newId: string) {
+        await this.plugin.app.vault.process(file, (data) => {
+            const lines = data.split('\n');
+            if (lineIndex >= 0 && lineIndex < lines.length) {
+                if (!lines[lineIndex].match(/\^([a-zA-Z0-9]+)\s*$/)) {
+                    lines[lineIndex] = lines[lineIndex] + ` ^${newId}`;
+                }
+            }
+            return lines.join('\n');
+        });
     }
 }
 

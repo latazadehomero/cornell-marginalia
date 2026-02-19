@@ -1,7 +1,7 @@
 {
 	"id": "cornell-marginalia",
 	"name": "Cornell Marginalia",
-	"version": "4.0.1",
+	"version": "4.0.2",
 	"minAppVersion": "0.15.0",
 	"description": "Renders Cornell-style marginal notes using the %%> ... %% syntax. Keeps your notes clean for flashcards and export.",
 	"author": "Latazadehomero",

@@ -58,20 +58,7 @@
     color: inherit !important;
 }
 
-/* --- ACTIVE RECALL BLUR (VERSIÓN BLOQUE/LÍNEA) --- */
-/* Se aplica a toda la línea contenedora */
-.cornell-blur {
-    color: transparent !important;
-    text-shadow: 0 0 12px var(--text-normal);
-    cursor: help;
-    transition: all 0.3s ease;
-}
 
-/* Al pasar el mouse por la línea, revelamos TODO el texto */
-.cornell-blur:hover {
-    color: var(--text-normal) !important;
-    text-shadow: none;
-}
 
 
 /* --- MOBILE SUPPORT (BETA) --- */
@@ -101,4 +88,175 @@
         
         pointer-events: auto;
     }
+}
+
+/* --- LECTURA (READING VIEW) FIXES --- */
+
+/* El contenedor del párrafo debe ser relativo para anclar la nota absoluta */
+.cornell-reading-block {
+    position: relative !important;
+    overflow: visible !important; /* Vital para que la nota no se corte si sale del margen */
+}
+
+/* Evitar que Obsidian oculte el desbordamiento en toda la vista de lectura */
+.markdown-preview-view {
+    overflow-x: visible !important;
+}
+
+.markdown-preview-sizer {
+    overflow: visible !important;
+}
+
+/* Ajustes finos para que se alinee bien con los párrafos en modo lectura */
+.reading-mode-margin {
+    /* En modo lectura, los párrafos suelen tener un margen superior, ajustamos el top */
+    top: 0; 
+    height: max-content;
+}
+
+/* --- MODO ACTIVO (BLUR) PARA VISTA DE LECTURA --- */
+
+/* SOLO aplica el difuminado si el body tiene la clase activa */
+body.cornell-active-recall-on .cornell-flashcard-target {
+    color: transparent !important;
+    text-shadow: 0 0 12px var(--text-normal);
+    cursor: help;
+    transition: all 0.3s ease;
+}
+
+/* Al pasar el mouse, revela el texto */
+body.cornell-active-recall-on .cornell-flashcard-target:hover {
+    color: var(--text-normal) !important;
+    text-shadow: none;
+}
+
+/* Proteger la marginalia para que la "pregunta" siga viéndose */
+body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin {
+    text-shadow: none !important;
+}
+
+body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin * {
+    text-shadow: none !important;
+    color: inherit !important;
+}
+
+
+/* --- ACTIVE RECALL BLUR (VERSIÓN BLOQUE/LÍNEA) --- */
+/* Se aplica a toda la línea contenedora */
+.cornell-blur {
+    color: transparent !important;
+    text-shadow: 0 0 12px var(--text-normal);
+    cursor: help;
+    transition: all 0.3s ease;
+}
+
+/* Al pasar el mouse por la línea, revelamos TODO el texto */
+.cornell-blur:hover {
+    color: var(--text-normal) !important;
+    text-shadow: none;
+}
+
+
+/* --- SIDEBAR EXPLORER --- */
+.cornell-sidebar-container {
+    padding: 10px;
+}
+
+.cornell-sidebar-title {
+    margin-top: 0;
+    margin-bottom: 15px;
+    text-align: center;
+}
+
+.cornell-sidebar-controls {
+    display: flex;
+    gap: 5px;
+    margin-bottom: 15px;
+}
+
+.cornell-sidebar-controls button {
+    flex-grow: 1;
+    cursor: pointer;
+    box-shadow: none;
+    border-radius: 4px;
+}
+
+.cornell-sidebar-controls button.cornell-tab-active {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.cornell-sidebar-empty {
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-top: 20px;
+}
+
+
+/* --- FIX VISTA LECTURA (Evitar notas superpuestas en listas) --- */
+.cornell-reading-block {
+    position: relative !important;
+    overflow: visible !important; 
+}
+
+.markdown-preview-view {
+    overflow-x: visible !important;
+}
+
+.markdown-preview-sizer {
+    overflow: visible !important;
+}
+
+/* --- SIDEBAR LIST STYLES --- */
+.cornell-sidebar-content {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    padding-bottom: 20px;
+}
+
+.cornell-sidebar-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85em;
+    font-weight: bold;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: -5px;
+}
+
+.cornell-sidebar-color-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.cornell-sidebar-item {
+    background-color: var(--background-secondary);
+    border-left: 3px solid var(--text-accent); /* Color dinámico inyectado por JS */
+    border-radius: 4px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.cornell-sidebar-item:hover {
+    background-color: var(--background-modifier-hover);
+    transform: translateX(2px);
+}
+
+.cornell-sidebar-item-text {
+    font-size: 0.9em;
+    color: var(--text-normal);
+    line-height: 1.3;
+    margin-bottom: 4px;
+}
+
+.cornell-sidebar-item-meta {
+    font-size: 0.75em;
+    color: var(--text-faint);
+    text-align: right;
 }

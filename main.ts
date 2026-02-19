@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, MarkdownRenderer, Component, Editor, Notice, MarkdownView } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, MarkdownRenderer, Component, Editor, Notice, MarkdownView, ItemView, WorkspaceLeaf, TFile } from 'obsidian';
 import { RangeSetBuilder } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { 
@@ -23,14 +23,23 @@ interface CornellSettings {
     fontSize: string;
     fontFamily: string;
     tags: CornellTag[];
+    enableReadingView: boolean; // <- NUEVO
+}
+// barra lateral item
+interface MarginaliaItem {
+    text: string;
+    color: string;
+    file: TFile;
+    line: number;
 }
 
 const DEFAULT_SETTINGS: CornellSettings = {
-    ignoredFolders: 'Templates, Archivos/Excluidos',
+    ignoredFolders: 'Templates',
     alignment: 'left', 
     marginWidth: 25,
     fontSize: '0.85em',
     fontFamily: 'inherit',
+    enableReadingView: true, // <- NUEVO (activado por defecto para que los nuevos usuarios lo vean)
     tags: [
         { prefix: '!', color: '#ffea00' }, 
         { prefix: '?', color: '#ff9900' }, 
@@ -68,7 +77,7 @@ class MarginNoteWidget extends WidgetType {
     ignoreEvent() { return false; } 
 }
 
-// --- EXTENSIÓN DE VISTA ---
+/// --- EXTENSIÓN DE VISTA ---
 const createCornellExtension = (app: App, settings: CornellSettings, getActiveRecallMode: () => boolean) => ViewPlugin.fromClass(class {
     decorations: DecorationSet;
 
@@ -95,7 +104,6 @@ const createCornellExtension = (app: App, settings: CornellSettings, getActiveRe
 
         const { state } = view;
         const cursorRanges = state.selection.ranges;
-        const isRecallMode = getActiveRecallMode(); 
 
         for (const { from, to } of view.visibleRanges) {
             const text = state.doc.sliceString(from, to);
@@ -124,25 +132,30 @@ const createCornellExtension = (app: App, settings: CornellSettings, getActiveRe
 
                 if (isCursorInside) continue;
 
-                // --- LÓGICA DE ACTIVE RECALL (BLUR) ---
-                if (isRecallMode && noteContent.trim().endsWith(";;")) {
+                // --- LÓGICA DE ACTIVE RECALL (BLUR) UNIFICADA ---
+                if (noteContent.trim().endsWith(";;")) {
                     builder.add(line.from, line.from, Decoration.line({
-                        class: "cornell-blur"
+                        class: "cornell-flashcard-target"
                     }));
                 }
 
                 // --- LÓGICA DE MARGINALIA ---
                 let matchedColor = null;
-                const trimmedContent = noteContent.trim();
+                let finalNoteText = noteContent.trim(); 
+                
                 for (const tag of settings.tags) {
-                    if (trimmedContent.startsWith(tag.prefix)) {
+                    if (finalNoteText.startsWith(tag.prefix)) {
                         matchedColor = tag.color;
+                        finalNoteText = finalNoteText.substring(tag.prefix.length).trim();
                         break;
                     }
                 }
 
+                // Si el texto quedó completamente vacío (ej. solo pusieron "%%> ! %%"), ignoramos la nota
+                if (finalNoteText.length === 0) continue;
+
                 builder.add(matchStart, matchEnd, Decoration.replace({
-                    widget: new MarginNoteWidget(noteContent, app, matchedColor)
+                    widget: new MarginNoteWidget(finalNoteText, app, matchedColor)
                 }));
             }
         }
@@ -151,6 +164,167 @@ const createCornellExtension = (app: App, settings: CornellSettings, getActiveRe
 }, {
     decorations: v => v.decorations
 });
+
+// --- CONSTANTE DE LA VISTA ---
+export const CORNELL_VIEW_TYPE = "cornell-marginalia-view";
+
+// --- VISTA LATERAL (SIDEBAR EXPLORER) ---
+class CornellNotesView extends ItemView {
+    plugin: CornellMarginalia;
+    currentTab: 'current' | 'vault' = 'current';
+
+    constructor(leaf: WorkspaceLeaf, plugin: CornellMarginalia) {
+        super(leaf);
+        this.plugin = plugin;
+    }
+
+    getViewType() { return CORNELL_VIEW_TYPE; }
+    getDisplayText() { return "Marginalia Explorer"; }
+    getIcon() { return "list"; }
+
+    async onOpen() {
+        this.renderUI();
+        await this.scanNotes(); // Escanear al abrir
+    }
+
+    renderUI() {
+        const container = this.containerEl.children[1];
+        container.empty();
+        container.addClass('cornell-sidebar-container');
+
+        container.createEl("h4", { text: "Marginalia Explorer", cls: "cornell-sidebar-title" });
+
+        const controlsDiv = container.createDiv({ cls: 'cornell-sidebar-controls' });
+        
+        const tabCurrent = controlsDiv.createEl("button", { text: "Current Note", cls: this.currentTab === 'current' ? 'cornell-tab-active' : '' });
+        const tabVault = controlsDiv.createEl("button", { text: "All Vault", cls: this.currentTab === 'vault' ? 'cornell-tab-active' : '' });
+        const btnRefresh = controlsDiv.createEl("button", { text: "🔄", title: "Refresh data" });
+
+        // Contenedor donde irán los resultados
+        container.createDiv({ cls: 'cornell-sidebar-content' });
+
+        tabCurrent.onclick = async () => {
+            this.currentTab = 'current';
+            this.renderUI();
+            await this.scanNotes();
+        };
+
+        tabVault.onclick = async () => {
+            this.currentTab = 'vault';
+            this.renderUI();
+            await this.scanNotes();
+        };
+
+        btnRefresh.onclick = async () => {
+            new Notice("Buscando marginalias...");
+            await this.scanNotes();
+        };
+    }
+
+    // --- EL MOTOR DE BÚSQUEDA ---
+    async scanNotes() {
+        const contentDiv = this.containerEl.querySelector('.cornell-sidebar-content') as HTMLElement;
+        if (!contentDiv) return;
+        
+        contentDiv.empty();
+        contentDiv.createEl('p', { text: 'Scanning...', cls: 'cornell-sidebar-empty' });
+
+        const results: Record<string, MarginaliaItem[]> = {};
+        const defaultColor = 'var(--text-accent)'; // Color por defecto si no tiene tag
+
+        let filesToScan: TFile[] = [];
+        if (this.currentTab === 'current') {
+            const activeFile = this.plugin.app.workspace.getActiveFile();
+            if (activeFile) filesToScan.push(activeFile);
+        } else {
+            filesToScan = this.plugin.app.vault.getMarkdownFiles();
+            // Filtrar carpetas ignoradas
+            const ignoredPaths = this.plugin.settings.ignoredFolders.split(',').map(s => s.trim()).filter(s => s.length > 0);
+            filesToScan = filesToScan.filter(f => !ignoredPaths.some(p => f.path.startsWith(p)));
+        }
+
+        for (const file of filesToScan) {
+            // cachedRead es super rápido porque lee la memoria interna de Obsidian
+            const content = await this.plugin.app.vault.cachedRead(file);
+            const lines = content.split('\n');
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const lineRegex = /%%>(.*?)%%/g;
+                let match;
+
+                while ((match = lineRegex.exec(line)) !== null) {
+                    let noteContent = match[1].trim();
+                    
+                    // Si es una flashcard (termina en ;;), limpiamos eso para la vista
+                    if (noteContent.endsWith(';;')) {
+                        noteContent = noteContent.slice(0, -2).trim();
+                    }
+
+                    let matchedColor = defaultColor;
+                    let finalText = noteContent;
+
+                    for (const tag of this.plugin.settings.tags) {
+                        if (finalText.startsWith(tag.prefix)) {
+                            matchedColor = tag.color;
+                            finalText = finalText.substring(tag.prefix.length).trim();
+                            break;
+                        }
+                    }
+
+                    if (finalText.length === 0) continue;
+
+                    if (!results[matchedColor]) results[matchedColor] = [];
+                    results[matchedColor].push({
+                        text: finalText,
+                        color: matchedColor,
+                        file: file,
+                        line: i // Guardamos la línea para poder viajar a ella
+                    });
+                }
+            }
+        }
+
+        this.renderResults(results, contentDiv);
+    }
+
+// --- RENDERIZADO VISUAL Y NAVEGACIÓN ---
+    renderResults(results: Record<string, MarginaliaItem[]>, container: HTMLElement) {
+        container.empty();
+        let totalFound = 0;
+
+        for (const [color, items] of Object.entries(results)) {
+            if (items.length === 0) continue;
+            totalFound += items.length;
+
+            // 1. Cabecera del Grupo (El punto de color)
+            const groupHeader = container.createDiv({ cls: 'cornell-sidebar-group' });
+            const colorDot = groupHeader.createSpan({ cls: 'cornell-sidebar-color-dot' });
+            colorDot.style.backgroundColor = color;
+            groupHeader.createSpan({ text: `${items.length} notes` });
+
+            // 2. Elementos de la lista
+            for (const item of items) {
+                const itemDiv = container.createDiv({ cls: 'cornell-sidebar-item' });
+                itemDiv.style.borderLeftColor = color;
+
+                itemDiv.createDiv({ cls: 'cornell-sidebar-item-text', text: item.text });
+                itemDiv.createDiv({ cls: 'cornell-sidebar-item-meta', text: `${item.file.basename} (L${item.line + 1})` });
+
+                // 3. EVENTO DE CLIC (Viajar a la nota - Solución Nativa)
+                itemDiv.onclick = async () => {
+                    const leaf = this.plugin.app.workspace.getLeaf(false);
+                    // eState le dice a Obsidian que haga scroll automático a esa línea
+                    await leaf.openFile(item.file, { eState: { line: item.line } });
+                };
+            }
+        }
+
+        if (totalFound === 0) {
+            container.createEl('p', { text: 'No marginalia found.', cls: 'cornell-sidebar-empty' });
+        }
+    }
+}
 
 // --- SETTINGS TAB ---
 class CornellSettingTab extends PluginSettingTab {
@@ -163,6 +337,18 @@ class CornellSettingTab extends PluginSettingTab {
         containerEl.createEl('h2', { text: 'Cornell Marginalia Settings' });
 
         containerEl.createEl('h3', { text: 'General Appearance' });
+        
+        new Setting(containerEl)
+            .setName('Enable in Reading View')
+            .setDesc('Shows marginalia in reading mode. Turn this off if you prefer a clean view.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableReadingView)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableReadingView = value;
+                    await this.plugin.saveSettings();
+                    new Notice('Reload the note to see changes in Reading View');
+                }));
+        
         new Setting(containerEl).setName('Margin Alignment').addDropdown(d => d.addOption('left', 'Left').addOption('right', 'Right').setValue(this.plugin.settings.alignment).onChange(async v => { this.plugin.settings.alignment = v as any; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
         new Setting(containerEl).setName('Margin Width (%)').addSlider(s => s.setLimits(15, 60, 1).setValue(this.plugin.settings.marginWidth).setDynamicTooltip().onChange(async v => { this.plugin.settings.marginWidth = v; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
         new Setting(containerEl).setName('Font Size').addText(t => t.setValue(this.plugin.settings.fontSize).onChange(async v => { this.plugin.settings.fontSize = v; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
@@ -188,6 +374,20 @@ export default class CornellMarginalia extends Plugin {
     async onload() {
         await this.loadSettings();
         this.updateStyles(); 
+// Registrar la nueva vista lateral
+        this.registerView(
+            CORNELL_VIEW_TYPE,
+            (leaf) => new CornellNotesView(leaf, this)
+        );
+
+        // Añadir el comando para abrir el explorador
+        this.addCommand({
+            id: 'open-cornell-explorer',
+            name: 'Open Marginalia Explorer',
+            callback: () => {
+                this.activateView();
+            }
+        });
         this.addSettingTab(new CornellSettingTab(this.app, this));
         
         this.registerEditorExtension(createCornellExtension(this.app, this.settings, () => this.activeRecallMode));
@@ -217,7 +417,83 @@ export default class CornellMarginalia extends Plugin {
                 this.generateFlashcards(editor);
             }
         });
+
+        this.addCommand({
+            id: 'toggle-reading-view-marginalia',
+            name: 'Toggle Marginalia in Reading View',
+            callback: async () => {
+                this.settings.enableReadingView = !this.settings.enableReadingView;
+                await this.saveSettings();
+                const statusMessage = this.settings.enableReadingView ? 'ON 📖' : 'OFF 🚫';
+                new Notice(`Reading View Marginalia: ${statusMessage}\n(Switch tabs or refresh to see the changes)`);
+            }
+        });
+
+        this.registerMarkdownPostProcessor((el, ctx) => {
+            if (!this.settings.enableReadingView) return;
+            
+            const sectionInfo = ctx.getSectionInfo(el);
+            if (!sectionInfo) return;
+
+            const lines = sectionInfo.text.split('\n');
+            const sectionLines = lines.slice(sectionInfo.lineStart, sectionInfo.lineEnd + 1);
+
+            const listItems = el.querySelectorAll('li');
+            let liIndex = 0;
+            let currentTarget: HTMLElement = el;
+
+            sectionLines.forEach((line) => {
+                const isListItemLine = /^[\s]*[-*+]\s/.test(line) || /^[\s]*\d+\.\s/.test(line);
+
+                if (isListItemLine) {
+                    if (listItems[liIndex]) {
+                        currentTarget = listItems[liIndex];
+                    }
+                    liIndex++;
+                }
+
+                const regex = /%%>(.*?)%%/g;
+                let match;
+                
+                while ((match = regex.exec(line)) !== null) {
+                    const noteContent = match[1].trim();
+                    const isFlashcard = noteContent.endsWith(";;");
+
+                    let matchedColor = null;
+                    let finalNoteText = noteContent;
+
+                    for (const tag of this.settings.tags) {
+                        if (finalNoteText.startsWith(tag.prefix)) {
+                            matchedColor = tag.color;
+                            finalNoteText = finalNoteText.substring(tag.prefix.length).trim();
+                            break;
+                        }
+                    }
+
+                    // Prevenir cajas vacías
+                    if (finalNoteText.length === 0) continue;
+
+                    const marginDiv = document.createElement("div");
+                    marginDiv.className = "cm-cornell-margin reading-mode-margin"; 
+                    
+                    if (matchedColor) {
+                        marginDiv.style.setProperty('border-color', matchedColor, 'important');
+                        marginDiv.style.setProperty('color', matchedColor, 'important');
+                    }
+
+                    MarkdownRenderer.render(this.app, finalNoteText, marginDiv, ctx.sourcePath, this);
+
+                    currentTarget.classList.add('cornell-reading-block');
+                    currentTarget.appendChild(marginDiv);
+
+                    if (isFlashcard) {
+                        currentTarget.classList.add('cornell-flashcard-target');
+                    }
+                }
+            });
+        });
     }
+
 
     toggleActiveRecall() {
         this.activeRecallMode = !this.activeRecallMode;
@@ -225,20 +501,40 @@ export default class CornellMarginalia extends Plugin {
         
         if (this.activeRecallMode) {
             this.ribbonIcon.setAttribute('aria-label', 'Disable Active Recall');
-            this.app.workspace.updateOptions();
+            document.body.classList.add('cornell-active-recall-on'); 
         } else {
             this.ribbonIcon.setAttribute('aria-label', 'Enable Active Recall');
-            this.app.workspace.updateOptions();
+            document.body.classList.remove('cornell-active-recall-on');
         }
+        
+        this.app.workspace.updateOptions();
     }
+async activateView() {
+        const { workspace } = this.app;
+        
+        let leaf: WorkspaceLeaf | null = null;
+        const leaves = workspace.getLeavesOfType(CORNELL_VIEW_TYPE);
 
+        if (leaves.length > 0) {
+            // Si ya está abierta, la seleccionamos
+            leaf = leaves[0];
+        } else {
+            // Si no está abierta, creamos una nueva pestaña a la derecha
+            leaf = workspace.getRightLeaf(false);
+            if (leaf) {
+                await leaf.setViewState({ type: CORNELL_VIEW_TYPE, active: true });
+            }
+        }
+
+        // Revelar la pestaña al usuario
+        if (leaf) workspace.revealLeaf(leaf);
+    }
     // --- LÓGICA DE FLASHCARDS INTELIGENTE ---
     generateFlashcards(editor: Editor) {
         const content = editor.getValue();
         const headerText = "### Flashcards";
         const lines = content.split('\n');
         
-        // 1. Encontrar todas las flashcards potenciales en el texto (las que tienen ;;)
         const foundFlashcards: Set<string> = new Set();
         const regex = /^(.*?)\s*%%>\s*(.*?);;\s*%%/; 
 
@@ -258,7 +554,6 @@ export default class CornellMarginalia extends Plugin {
             return;
         }
 
-        // 2. Comprobar si ya existe la sección ### Flashcards
         let headerLineIndex = -1;
         for (let i = 0; i < lines.length; i++) {
             if (lines[i].trim() === headerText) {
@@ -270,18 +565,15 @@ export default class CornellMarginalia extends Plugin {
         let newFlashcards: string[] = [];
 
         if (headerLineIndex !== -1) {
-            // 3a. Si la sección existe, leemos qué hay debajo para no duplicar
             const existingContent = lines.slice(headerLineIndex + 1).join('\n');
             
             foundFlashcards.forEach(card => {
-                // Solo añadimos si NO está ya en la sección de flashcards
                 if (!existingContent.includes(card)) {
                     newFlashcards.push(card);
                 }
             });
 
             if (newFlashcards.length > 0) {
-                // Insertamos solo las nuevas AL FINAL del archivo
                 const textToAppend = '\n' + newFlashcards.join('\n');
                 const lastLine = editor.lineCount();
                 editor.replaceRange(textToAppend, { line: lastLine, ch: 0 });
@@ -291,7 +583,6 @@ export default class CornellMarginalia extends Plugin {
             }
 
         } else {
-            // 3b. Si la sección NO existe, la creamos con todas las cartas encontradas
             newFlashcards = Array.from(foundFlashcards);
             const textToAppend = `\n\n${headerText}\n${newFlashcards.join('\n')}`;
             const lastLine = editor.lineCount();

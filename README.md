@@ -61,7 +61,7 @@ Toggle the "Eye" Icon 👁️ in the ribbon to enter Study Mode.
 
     Seamless: Works instantly and flawlessly across both Live Preview and Reading View simultaneously!
 
-Markdown
+Example: 
 
 The mitochondria produces energy. %%> What does it produce? ;; %%
 

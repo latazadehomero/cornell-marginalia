@@ -94,6 +94,14 @@ Obsidian's native PDF export engine notoriously struggles with floating margin n
 
 > ⚠️ **Important:** Always remember to run the *Restore* command after exporting to keep your Markdown files clean and future-proof!
 
+### 9. 🚀 Drag & Drop Integration (Excalidraw & Canvas) [NEW in v2.2.0]
+
+Marginalia is no longer just for reading; it's a tool for connecting ideas! 
+
+You can now click and drag any note directly from the **Marginalia Explorer** sidebar and drop it into an Obsidian Canvas or an Excalidraw drawing. 
+* The plugin instantly creates a native, indestructible Block ID link behind the scenes.
+* Clicking the dropped node in your canvas will open the source file and scroll you down to the exact paragraph where the note belongs. Perfect for building mind maps from your summaries!
+
 ### ⚡ Shortcuts & Commands
 
 You don't need to type %%> manually every time or dig through settings! The plugin includes smart commands to speed up your workflow.

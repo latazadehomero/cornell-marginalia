@@ -1,4 +1,4 @@
-<p align="center">
+<p align="left">
   <img src="assets/marginalia logo.png" width="100" title="Marginalia">
 </p>
 

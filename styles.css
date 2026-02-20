@@ -607,6 +607,60 @@ body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin * {
 
 
 /* ======================================================
+   👀 VISIÓN DE RAYOS X (HOVER CONTEXT TOOLTIP)
+   ====================================================== */
+.cornell-hover-tooltip {
+    position: fixed;
+    z-index: 9999;
+    width: 320px;
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border-hover);
+    border-radius: 8px;
+    padding: 12px 16px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    pointer-events: none; /* Para que el ratón no se atore en ella */
+    
+    font-size: 0.9em;
+    color: var(--text-normal);
+    line-height: 1.5;
+    
+    opacity: 0;
+    transform: translateY(5px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.cornell-hover-tooltip.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.cornell-hover-context {
+    color: var(--text-muted);
+    font-size: 0.85em;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.cornell-hover-highlight {
+    background-color: rgba(var(--interactive-accent), 0.15);
+    border-left: 3px solid var(--interactive-accent);
+    padding-left: 8px;
+    color: var(--text-normal);
+    font-weight: 500;
+    margin: 4px 0;
+    border-radius: 0 4px 4px 0;
+}
+
+.cornell-hover-text-line {
+    padding-left: 11px;
+    color: var(--text-muted);
+}
+
+
+/* ======================================================
    👻 CLASE PARA OCULTAR TEXTO CRUDO EN MODO EDICIÓN
    ====================================================== */
 .cornell-hide-raw {

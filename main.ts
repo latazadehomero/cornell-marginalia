@@ -262,6 +262,8 @@ export const CORNELL_VIEW_TYPE = "cornell-marginalia-view";
 // --- VISTA LATERAL (SIDEBAR EXPLORER) ACTUALIZADA 🧵 ---
 // --- VISTA LATERAL (SIDEBAR EXPLORER) CON ÁRBOLES DE HILOS 🌳🧵 ---
 // --- VISTA LATERAL (EXPLORER) CON BUSCADOR INTELIGENTE Y CACHÉ 🔍🧠 ---
+// --- VISTA LATERAL (EXPLORER) CON BUSCADOR INTELIGENTE, DRAG & DROP Y DEDUPLICACIÓN 🔍🧠 ---
+// --- VISTA LATERAL (EXPLORER) CON BUSCADOR INTELIGENTE, DRAG & DROP MULTI-COSTURA Y DEDUPLICACIÓN 🔍🧠 ---
 class CornellNotesView extends ItemView {
     plugin: CornellMarginalia;
     currentTab: 'current' | 'vault' | 'threads' = 'current';
@@ -269,13 +271,14 @@ class CornellNotesView extends ItemView {
     isStitchingMode: boolean = false;
     sourceStitchItem: MarginaliaItem | null = null;
 
-    // NUEVO: Variables de Memoria para el Buscador Instantáneo
     searchQuery: string = '';
     activeColorFilters: Set<string> = new Set();
     cachedItems: MarginaliaItem[] = []; 
 
-    // 🧠 NUEVO: Memoria para el Drag & Drop interno
-    draggedSidebarItem: MarginaliaItem | null = null;
+    // 🧠 AHORA ES UN ARRAY: Puede guardar 1 nota o 50 notas al mismo tiempo
+    draggedSidebarItems: MarginaliaItem[] | null = null; 
+    
+    isGroupedByContent: boolean = false; 
 
     constructor(leaf: WorkspaceLeaf, plugin: CornellMarginalia) {
         super(leaf);
@@ -304,33 +307,32 @@ class CornellNotesView extends ItemView {
         const tabVault = controlsDiv.createEl("button", { text: "Vault", cls: this.currentTab === 'vault' ? 'cornell-tab-active' : '' });
         const tabThreads = controlsDiv.createEl("button", { text: "🧵 Threads", cls: this.currentTab === 'threads' ? 'cornell-tab-active' : '' });
         
-        const btnStitch = controlsDiv.createEl("button", { text: "🔗 Stitch", title: "Connect two notes" });
-        const btnRefresh = controlsDiv.createEl("button", { text: "🔄", title: "Refresh data" });
+        const actionControlsDiv = container.createDiv({ cls: 'cornell-sidebar-controls' });
+        const btnStitch = actionControlsDiv.createEl("button", { text: "🔗 Stitch", title: "Connect two notes" });
+        
+        const btnGroup = actionControlsDiv.createEl("button", { 
+            text: "🗂️ Group", 
+            title: "Group identical notes", 
+            cls: this.isGroupedByContent ? 'cornell-tab-active' : '' 
+        });
+        
+        const btnRefresh = actionControlsDiv.createEl("button", { text: "🔄", title: "Refresh data" });
 
-        // --- NUEVO: PANEL DE FILTROS Y BÚSQUEDA ---
         const filterContainer = container.createDiv({ cls: 'cornell-sidebar-filters' });
         
-        // 1. Barra de búsqueda
-        const searchInput = filterContainer.createEl('input', { 
-            type: 'text', 
-            placeholder: '🔍 Search notes...', 
-            cls: 'cornell-search-bar' 
-        });
+        const searchInput = filterContainer.createEl('input', { type: 'text', placeholder: '🔍 Search notes...', cls: 'cornell-search-bar' });
         searchInput.value = this.searchQuery;
         searchInput.oninput = (e) => {
             this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
-            this.applyFiltersAndRender(); // Filtra al instante usando el caché
+            this.applyFiltersAndRender(); 
         };
 
-        // 2. Píldoras de colores (Generadas a partir de tus Settings)
         const pillsContainer = filterContainer.createDiv({ cls: 'cornell-color-pills' });
         this.plugin.settings.tags.forEach(tag => {
             const pill = pillsContainer.createEl('span', { cls: 'cornell-color-pill' });
             pill.style.backgroundColor = tag.color;
             pill.title = `Filter ${tag.prefix}`;
-            
             if (this.activeColorFilters.has(tag.color)) pill.addClass('is-active');
-
             pill.onclick = () => {
                 if (this.activeColorFilters.has(tag.color)) {
                     this.activeColorFilters.delete(tag.color);
@@ -342,7 +344,6 @@ class CornellNotesView extends ItemView {
                 this.applyFiltersAndRender();
             };
         });
-        // ----------------------------------------
 
         container.createDiv({ cls: 'cornell-stitch-banner', text: '' }).style.display = 'none';
         container.createDiv({ cls: 'cornell-sidebar-content' });
@@ -358,6 +359,12 @@ class CornellNotesView extends ItemView {
             this.sourceStitchItem = null; 
             btnStitch.classList.toggle('cornell-tab-active', this.isStitchingMode);
             this.updateStitchBanner();
+        };
+
+        btnGroup.onclick = () => {
+            this.isGroupedByContent = !this.isGroupedByContent;
+            btnGroup.classList.toggle('cornell-tab-active', this.isGroupedByContent);
+            this.applyFiltersAndRender();
         };
     }
 
@@ -441,13 +448,10 @@ class CornellNotesView extends ItemView {
                 }
             }
         }
-        
-        // Guardamos todo en memoria para búsquedas instantáneas
         this.cachedItems = allItemsFlat;
         this.applyFiltersAndRender();
     }
 
-// --- NUEVO: MOTOR INTELIGENTE DE FILTRADO (LÓGICA INVERTIDA) ---
     applyFiltersAndRender() {
         const contentDiv = this.containerEl.querySelector('.cornell-sidebar-content') as HTMLElement;
         if (!contentDiv) return;
@@ -462,7 +466,6 @@ class CornellNotesView extends ItemView {
 
         if (this.currentTab === 'threads') {
             if (!isFilterActive) {
-                // SIN FILTROS: Lógica normal (Buscamos Raíces Absolutas)
                 const allTargetIds = new Set<string>();
                 this.cachedItems.forEach(item => {
                     item.outgoingLinks.forEach(l => {
@@ -470,58 +473,165 @@ class CornellNotesView extends ItemView {
                         if (parts.length === 2) allTargetIds.add(parts[1]);
                     });
                 });
-
-                const rootItems = this.cachedItems.filter(item => 
-                    item.outgoingLinks.length > 0 && (!item.blockId || !allTargetIds.has(item.blockId))
-                );
+                const rootItems = this.cachedItems.filter(item => item.outgoingLinks.length > 0 && (!item.blockId || !allTargetIds.has(item.blockId)));
                 this.renderThreads(rootItems, contentDiv, false);
-
             } else {
-                // CON FILTROS: Las notas que coinciden se convierten en las NUEVAS raíces
                 const matchingItems = this.cachedItems.filter(matchesFilter);
-                
-                // Evitamos dibujar sub-árboles repetidos (Si A y B coinciden, y A apunta a B, solo dibujamos A)
                 const topLevelMatches = matchingItems.filter(item => {
-                    const isChildOfAnotherMatch = matchingItems.some(parent => 
-                        item.blockId && parent.outgoingLinks.some(link => link.includes(`#^${item.blockId}`))
-                    );
+                    const isChildOfAnotherMatch = matchingItems.some(parent => item.blockId && parent.outgoingLinks.some(link => link.includes(`#^${item.blockId}`)));
                     return !isChildOfAnotherMatch;
                 });
-
-                // Le avisamos al renderizador que estamos en "Modo Filtro"
                 this.renderThreads(topLevelMatches, contentDiv, true);
             }
-
         } else {
-            // Lógica para Current y Vault
             const filtered = this.cachedItems.filter(matchesFilter);
-            const results: Record<string, MarginaliaItem[]> = {};
             
-            filtered.forEach(item => {
-                if (!results[item.color]) results[item.color] = [];
-                results[item.color].push(item);
-            });
-            
-            this.renderResults(results, contentDiv);
+            if (this.isGroupedByContent) {
+                const groupedResults: Record<string, MarginaliaItem[]> = {};
+                filtered.forEach(item => {
+                    const normalizedText = item.text.trim().toLowerCase();
+                    if (!groupedResults[normalizedText]) groupedResults[normalizedText] = [];
+                    groupedResults[normalizedText].push(item);
+                });
+                this.renderGroupedByContent(groupedResults, contentDiv);
+            } else {
+                const results: Record<string, MarginaliaItem[]> = {};
+                filtered.forEach(item => {
+                    if (!results[item.color]) results[item.color] = [];
+                    results[item.color].push(item);
+                });
+                this.renderResults(results, contentDiv);
+            }
         }
     }
 
-    // --- RENDERIZADOR PRINCIPAL ---
+    renderGroupedByContent(groupedResults: Record<string, MarginaliaItem[]>, container: HTMLElement) {
+        container.empty();
+        let totalFound = 0;
+
+        for (const [normalizedText, items] of Object.entries(groupedResults)) {
+            if (items.length === 0) continue;
+            totalFound += items.length;
+
+            if (items.length === 1) {
+                this.createItemDiv(items[0], container);
+                continue;
+            }
+
+            const groupParent = container.createDiv({ cls: 'cornell-thread-parent' });
+            groupParent.style.position = 'relative';
+
+            const representativeItem = items[0]; 
+
+            const headerDiv = groupParent.createDiv({ cls: 'cornell-sidebar-item' });
+            headerDiv.style.borderLeftColor = representativeItem.color;
+            headerDiv.createDiv({ cls: 'cornell-sidebar-item-text', text: representativeItem.text });
+            headerDiv.createDiv({ cls: 'cornell-sidebar-item-meta', text: `🗂️ ${items.length} occurrences` });
+
+            // ======================================================
+            // 🎯 NUEVO: MOTOR D&D PARA EL GRUPO COMPLETO (LA CARPETA)
+            // ======================================================
+            headerDiv.setAttr('draggable', 'true');
+            
+            headerDiv.addEventListener('dragstart', (event: DragEvent) => {
+                if (!event.dataTransfer) return;
+                event.dataTransfer.effectAllowed = 'copy'; 
+                
+                let targetId = representativeItem.blockId;
+                if (!targetId) {
+                    targetId = Math.random().toString(36).substring(2, 8);
+                    representativeItem.blockId = targetId; 
+                    this.injectBackgroundBlockId(representativeItem.file, representativeItem.line, targetId);
+                }
+                const dragPayload = `[[${representativeItem.file.basename}#^${targetId}|Group: ${representativeItem.text}]]`;
+                event.dataTransfer.setData('text/plain', dragPayload);
+
+                this.draggedSidebarItems = items; // ENVIAMOS TODOS LOS HIJOS
+            });
+
+            headerDiv.addEventListener('dragend', () => {
+                this.draggedSidebarItems = null; 
+                headerDiv.removeClass('cornell-drop-target');
+            });
+
+            headerDiv.addEventListener('dragenter', (e: DragEvent) => {
+                e.preventDefault(); 
+                const isSelf = this.draggedSidebarItems && this.draggedSidebarItems.some(i => items.includes(i));
+                if (this.draggedSidebarItems && !isSelf) {
+                    headerDiv.addClass('cornell-drop-target');
+                }
+            });
+
+            headerDiv.addEventListener('dragover', (e: DragEvent) => {
+                e.preventDefault(); 
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; 
+            });
+
+            headerDiv.addEventListener('dragleave', () => {
+                headerDiv.removeClass('cornell-drop-target'); 
+            });
+
+            headerDiv.addEventListener('drop', async (e: DragEvent) => {
+                e.preventDefault();
+                e.stopPropagation(); 
+                headerDiv.removeClass('cornell-drop-target');
+
+                const isSelf = this.draggedSidebarItems && this.draggedSidebarItems.some(i => items.includes(i));
+                if (this.draggedSidebarItems && !isSelf) {
+                    // El Grupo es el Padre (Source), Las notas arrastradas son los Hijos (Targets)
+                    await this.executeMassStitch(items, this.draggedSidebarItems);
+                    this.draggedSidebarItems = null;
+                }
+            });
+            // ======================================================
+
+            const childrenContainer = groupParent.createDiv({ cls: 'cornell-thread-tree is-collapsed' });
+            
+            const toggleBtn = headerDiv.createDiv({ cls: 'cornell-collapse-toggle is-collapsed' });
+            toggleBtn.innerHTML = '▼';
+            headerDiv.prepend(toggleBtn);
+
+            toggleBtn.onclick = (e) => {
+                e.stopPropagation();
+                const isCollapsed = childrenContainer.hasClass('is-collapsed');
+                if (isCollapsed) {
+                    childrenContainer.removeClass('is-collapsed');
+                    toggleBtn.removeClass('is-collapsed');
+                } else {
+                    childrenContainer.addClass('is-collapsed');
+                    toggleBtn.addClass('is-collapsed');
+                }
+            };
+
+            items.forEach(item => {
+                const childDiv = this.createItemDiv(item, childrenContainer);
+                const textNode = childDiv.querySelector('.cornell-sidebar-item-text') as HTMLElement;
+                if (textNode) textNode.style.display = 'none'; 
+                
+                const metaNode = childDiv.querySelector('.cornell-sidebar-item-meta') as HTMLElement;
+                if (metaNode) {
+                    metaNode.style.fontSize = '0.9em';
+                    metaNode.style.textAlign = 'left';
+                    metaNode.style.color = 'var(--text-normal)';
+                }
+            });
+        }
+
+        if (totalFound === 0) container.createEl('p', { text: 'No notes match your search.', cls: 'cornell-sidebar-empty' });
+    }
+
     renderThreads(rootItems: MarginaliaItem[], container: HTMLElement, isFilteredMode: boolean = false) {
         container.empty();
         if (rootItems.length === 0) {
             container.createEl('p', { text: 'No matching threads found.', cls: 'cornell-sidebar-empty' });
             return;
         }
-
         for (const root of rootItems) {
             const threadGroup = container.createDiv({ cls: 'cornell-thread-parent' });
-            // Pasamos isFilteredMode y le decimos que ESTA nota es la primera (isRootCall = true)
             this.renderThreadNode(root, threadGroup, this.cachedItems, new Set<string>(), isFilteredMode, true);
         }
     }
 
-    // --- MOTOR RECURSIVO (CON BOTÓN "UP" ⬆️) ---
     renderThreadNode(item: MarginaliaItem, container: HTMLElement, allItems: MarginaliaItem[], visitedIds: Set<string>, isFilteredMode: boolean = false, isRootCall: boolean = false) {
         if (item.blockId && visitedIds.has(item.blockId)) {
             const brokenDiv = container.createDiv({ cls: 'cornell-sidebar-item' });
@@ -535,15 +645,11 @@ class CornellNotesView extends ItemView {
 
         const nodeWrapper = container.createDiv({ cls: 'cornell-node-wrapper' });
 
-        // --- NUEVO: BOTÓN "PROVIENE DE..." (Solo se muestra si filtramos y es la nota superior) ---
         if (isFilteredMode && isRootCall && item.blockId) {
-            // Buscamos quién lo conectó
             const parentNode = allItems.find(p => p.outgoingLinks.some(link => link.includes(`#^${item.blockId}`)));
             if (parentNode) {
                 const upBtn = nodeWrapper.createDiv({ cls: 'cornell-thread-up-btn', title: 'Go to parent note' });
                 upBtn.innerHTML = `↑ Child of: <b>${parentNode.file.basename}</b>`;
-                
-                // Al tocarlo, te teletransporta al Padre
                 upBtn.onclick = async () => {
                     const leaf = this.plugin.app.workspace.getLeaf(false);
                     await leaf.openFile(parentNode.file, { eState: { line: parentNode.line } });
@@ -580,7 +686,6 @@ class CornellNotesView extends ItemView {
                     const childItem = allItems.find(i => i.blockId === targetId);
                     
                     if (childItem) {
-                        // isRootCall se vuelve false porque estos son los hijos
                         this.renderThreadNode(childItem, childrenContainer, allItems, newVisited, isFilteredMode, false);
                     } else {
                         const brokenDiv = childrenContainer.createDiv({ cls: 'cornell-sidebar-item' });
@@ -612,7 +717,7 @@ class CornellNotesView extends ItemView {
         if (totalFound === 0) container.createEl('p', { text: 'No notes match your search.', cls: 'cornell-sidebar-empty' });
     }
 
-createItemDiv(item: MarginaliaItem, parentContainer: HTMLElement): HTMLElement {
+    createItemDiv(item: MarginaliaItem, parentContainer: HTMLElement): HTMLElement {
         const itemDiv = parentContainer.createDiv({ cls: 'cornell-sidebar-item' });
         itemDiv.style.borderLeftColor = item.color;
 
@@ -630,11 +735,10 @@ createItemDiv(item: MarginaliaItem, parentContainer: HTMLElement): HTMLElement {
                         new Notice("Cannot connect a note to itself.");
                         return;
                     }
-                    await this.executeStitch(this.sourceStitchItem, item);
+                    await this.executeMassStitch([this.sourceStitchItem], [item]);
                     this.isStitchingMode = false;
                     this.sourceStitchItem = null;
                     this.updateStitchBanner();
-                    await this.scanNotes();
                 }
                 return;
             }
@@ -643,15 +747,83 @@ createItemDiv(item: MarginaliaItem, parentContainer: HTMLElement): HTMLElement {
         };
 
         // ======================================================
-        // 🎯 EL NUEVO MOTOR DRAG & DROP (VERSIÓN BLINDADA)
+        // 👀 NUEVO: MOTOR DE VISIÓN DE RAYOS X (HOVER)
+        // ======================================================
+        let hoverTimeout: NodeJS.Timeout | null = null;
+        let tooltipEl: HTMLElement | null = null;
+
+        const removeTooltip = () => {
+            if (hoverTimeout) clearTimeout(hoverTimeout);
+            if (tooltipEl) {
+                tooltipEl.remove();
+                tooltipEl = null;
+            }
+        };
+
+        itemDiv.addEventListener('mouseenter', (e: MouseEvent) => {
+            // Esperamos 600ms para asegurar que el usuario quiere leerlo y no solo está pasando el ratón
+            hoverTimeout = setTimeout(async () => {
+                const content = await this.plugin.app.vault.cachedRead(item.file);
+                const lines = content.split('\n');
+                
+                // Extraemos la línea anterior, la actual y la siguiente para dar contexto
+                const startLine = Math.max(0, item.line - 1);
+                const endLine = Math.min(lines.length - 1, item.line + 1);
+                
+                let contextText = '';
+                for (let i = startLine; i <= endLine; i++) {
+                    // Limpiamos la marginalia del texto original para que la lectura sea pura
+                    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                    if (cleanLine) {
+                        if (i === item.line) {
+                            contextText += `<div class="cornell-hover-highlight">${cleanLine}</div>`;
+                        } else {
+                            contextText += `<div class="cornell-hover-text-line">${cleanLine}</div>`;
+                        }
+                    }
+                }
+
+                if (!contextText) contextText = "<div class='cornell-hover-text-line'><i>No text context available.</i></div>";
+
+                tooltipEl = document.createElement('div');
+                tooltipEl.className = 'cornell-hover-tooltip';
+                
+                const header = tooltipEl.createDiv({ cls: 'cornell-hover-context' });
+                header.innerHTML = `<span>📄 <b>${item.file.basename}</b></span> <span>L${item.line + 1}</span>`;
+                
+                const body = tooltipEl.createDiv();
+                body.innerHTML = contextText;
+
+                document.body.appendChild(tooltipEl);
+
+                // Posicionamiento inteligente (Aparece a la izquierda de la barra lateral)
+                const rect = itemDiv.getBoundingClientRect();
+                let leftPos = rect.left - 340; 
+                // Si tienes la barra a la izquierda y no cabe, lo mandamos a la derecha
+                if (leftPos < 10) leftPos = rect.right + 20; 
+                
+                tooltipEl.style.left = `${leftPos}px`;
+                // Evitamos que se salga por abajo de la pantalla
+                tooltipEl.style.top = `${Math.min(rect.top, window.innerHeight - 150)}px`;
+                
+                requestAnimationFrame(() => {
+                    if (tooltipEl) tooltipEl.addClass('is-visible');
+                });
+
+            }, 600); 
+        });
+
+        itemDiv.addEventListener('mouseleave', removeTooltip);
+
+        // ======================================================
+        // 🎯 MOTOR DRAG & DROP
         // ======================================================
         itemDiv.setAttr('draggable', 'true');
         
-        // 1. AL EMPEZAR A ARRASTRAR
         itemDiv.addEventListener('dragstart', (event: DragEvent) => {
-            if (!event.dataTransfer) return;
+            removeTooltip(); // Matamos el tooltip si empiezas a arrastrar
             
-            // Usamos 'copy' estándar para evitar conflictos de seguridad en el navegador
+            if (!event.dataTransfer) return;
             event.dataTransfer.effectAllowed = 'copy'; 
             
             let targetId = item.blockId;
@@ -663,71 +835,92 @@ createItemDiv(item: MarginaliaItem, parentContainer: HTMLElement): HTMLElement {
             const dragPayload = `[[${item.file.basename}#^${targetId}|${item.text}]]`;
             event.dataTransfer.setData('text/plain', dragPayload);
 
-            this.draggedSidebarItem = item; 
+            this.draggedSidebarItems = [item]; 
         });
 
-        // 2. AL TERMINAR (Limpieza de seguridad)
         itemDiv.addEventListener('dragend', () => {
-            this.draggedSidebarItem = null; 
+            this.draggedSidebarItems = null; 
             itemDiv.removeClass('cornell-drop-target');
         });
 
-        // 3. NUEVO: DRAG ENTER (Crucial para que el navegador conceda el permiso)
         itemDiv.addEventListener('dragenter', (e: DragEvent) => {
             e.preventDefault(); 
-            if (this.draggedSidebarItem && this.draggedSidebarItem !== item) {
+            if (this.draggedSidebarItems && !this.draggedSidebarItems.includes(item)) {
                 itemDiv.addClass('cornell-drop-target');
             }
         });
 
-        // 4. DRAG OVER (Mantener el permiso activo)
         itemDiv.addEventListener('dragover', (e: DragEvent) => {
             e.preventDefault(); 
-            if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; // Debe coincidir con dragstart
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; 
         });
 
-        // 5. DRAG LEAVE (Apagar luces al salir)
         itemDiv.addEventListener('dragleave', () => {
             itemDiv.removeClass('cornell-drop-target'); 
         });
 
-        // 6. DROP (La costura final)
         itemDiv.addEventListener('drop', async (e: DragEvent) => {
             e.preventDefault();
-            
-            // 🛡️ EL ESCUDO: Evita que el núcleo de Obsidian se robe el evento
             e.stopPropagation(); 
-            
             itemDiv.removeClass('cornell-drop-target');
 
-            if (this.draggedSidebarItem && this.draggedSidebarItem !== item) {
-                await this.executeStitch(item, this.draggedSidebarItem);
-                
-                this.draggedSidebarItem = null;
-                await this.scanNotes(); 
+            if (this.draggedSidebarItems && !this.draggedSidebarItems.includes(item)) {
+                await this.executeMassStitch([item], this.draggedSidebarItems);
+                this.draggedSidebarItems = null;
             }
         });
 
-        return itemDiv; // (Asegúrate de que esta línea siga estando al final)
+        return itemDiv;
     }
 
-    async executeStitch(source: MarginaliaItem, target: MarginaliaItem) {
-        new Notice("Cosiendo hilo...");
-        let targetId = target.blockId;
-        if (!targetId) {
-            targetId = Math.random().toString(36).substring(2, 8);
-            await this.injectBackgroundBlockId(target.file, target.line, targetId);
-        }
-        const linkToInject = ` [[${target.file.basename}#^${targetId}]]`;
-
-        await this.plugin.app.vault.process(source.file, (data) => {
-            const lines = data.split('\n');
-            if (source.line >= 0 && source.line < lines.length) {
-                lines[source.line] = lines[source.line].replace(source.text, source.text + linkToInject);
+    // ======================================================
+    // 🧠 NUEVO MOTOR CENTRAL DE MULTI-COSTURA (MASS STITCHING)
+    // ======================================================
+    async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
+        const totalLinks = sources.length * targets.length;
+        
+        // 🛡️ EL SEGURO ANTI-DESASTRES
+        if (totalLinks > 1) {
+            const confirmed = window.confirm(
+                `⚠️ Multi-Stitch Warning\n\nYou are about to create ${totalLinks} connections.\nThis will modify ${sources.length} note(s).\n\nAre you sure you want to proceed?`
+            );
+            if (!confirmed) {
+                new Notice("Stitching cancelled.");
+                return;
             }
-            return lines.join('\n');
-        });
-        new Notice("¡Hilo conectado con éxito! 🔗");
+        }
+
+        new Notice(`Stitching ${totalLinks} thread(s)... 🔗`);
+
+        // 1. Aseguramos que todas las notas destino tengan un ID
+        for (const target of targets) {
+            if (!target.blockId) {
+                target.blockId = Math.random().toString(36).substring(2, 8);
+                await this.injectBackgroundBlockId(target.file, target.line, target.blockId);
+            }
+        }
+
+        // 2. Inyectamos los enlaces en las notas origen
+        for (const source of sources) {
+            let linksToInject = "";
+            for (const target of targets) {
+                if (source === target) continue; // Evita enlaces circulares a la misma nota
+                linksToInject += ` [[${target.file.basename}#^${target.blockId}]]`;
+            }
+            
+            if (linksToInject.length > 0) {
+                await this.plugin.app.vault.process(source.file, (data) => {
+                    const lines = data.split('\n');
+                    if (source.line >= 0 && source.line < lines.length) {
+                        lines[source.line] = lines[source.line].replace(source.text, source.text + linksToInject);
+                    }
+                    return lines.join('\n');
+                });
+            }
+        }
+
+        new Notice("¡Hilos conectados con éxito! ✨");
+        await this.scanNotes(); // Refrescamos el explorador para ver la magia
     }
 
     async injectBackgroundBlockId(file: TFile, lineIndex: number, newId: string) {

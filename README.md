@@ -19,6 +19,7 @@ Mitochondria are membrane-bound cell organelles that
 generate most of the chemical energy. %%> "Powerhouse" of the cell (ATP) %%
 
 ```
+Bidirectional Margins: You can now use the %%< syntax to force a specific note to render on the opposite margin (only Reading View). Perfect for dual-margin workflows!
 
 ### 2. 🎨 Semantic Highlighting (New in v2.0)
 

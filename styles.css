@@ -659,6 +659,27 @@ body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin * {
     color: var(--text-muted);
 }
 
+/* ======================================================
+   🫥 CONTENEDOR INVISIBLE PARA AGRUPAR BLOQUES (WORKAROUND)
+   ====================================================== */
+.callout[data-callout*="cornell" i] {
+    background-color: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Ocultamos el título y el icono por completo */
+.callout[data-callout*="cornell" i] .callout-title {
+    display: none !important;
+}
+
+/* Quitamos el margen interno para que el texto fluya natural */
+.callout[data-callout*="cornell" i] .callout-content {
+    padding: 0 !important;
+}
 
 /* ======================================================
    👻 CLASE PARA OCULTAR TEXTO CRUDO EN MODO EDICIÓN

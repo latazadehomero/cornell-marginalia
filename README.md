@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/marginalia logo.png" width="600" title="Marginalia">
+  <img src="assets/marginalia logo.png" width="100" title="Marginalia">
 </p>
 
 

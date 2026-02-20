@@ -305,3 +305,198 @@ body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin * {
     }
 }
 
+/* ======================================================
+   🧵 ESTILOS PARA LOS HILOS DE MARGINALIAS (THREADS)
+   ====================================================== */
+
+.cornell-thread-container {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 5px;
+    gap: 5px;
+}
+
+.cornell-thread-btn {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    cursor: pointer;
+    font-size: 1.1em;
+    padding: 2px 5px;
+    border-radius: 4px;
+    opacity: 0.6;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.cornell-thread-btn:hover {
+    opacity: 1;
+    background-color: var(--background-modifier-hover);
+    transform: scale(1.1);
+}
+
+/* ======================================================
+   🧵 ESTILOS PARA LA INTERFAZ DE COSIDO
+   ====================================================== */
+.cornell-stitch-banner {
+    color: var(--text-on-accent);
+    padding: 6px 10px;
+    text-align: center;
+    font-size: 0.9em;
+    font-weight: bold;
+    border-radius: 4px;
+    margin: 8px 10px;
+    transition: background-color 0.3s ease;
+}
+
+/* ======================================================
+   🌳 ESTILOS PARA LOS ÁRBOLES RECURSIVOS (THREADS)
+   ====================================================== */
+.cornell-thread-parent {
+    margin-bottom: 20px;
+    background-color: rgba(var(--color-base-30), 0.1);
+    border-radius: 8px;
+    padding: 8px 8px 12px 8px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.cornell-thread-tree {
+    /* Cada vez que el motor dibuje un hijo, se empujará 15px más a la derecha */
+    margin-left: 15px; 
+    border-left: 2px dashed var(--background-modifier-border-hover);
+    padding-left: 10px;
+    margin-top: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+/* ======================================================
+   📂 ESTILOS PARA NODOS PLEGABLES (COLLAPSIBLE THREADS)
+   ====================================================== */
+
+.cornell-collapse-toggle {
+    position: absolute;
+    /* Lo centramos justo sobre la línea de color izquierda */
+    left: -10px; 
+    top: 8px;
+    
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    
+    font-size: 0.65em;
+    cursor: pointer;
+    color: var(--text-muted);
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 50%;
+    
+    transition: all 0.2s ease;
+    z-index: 10;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+.cornell-collapse-toggle:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+    transform: scale(1.1);
+}
+
+/* Estado Colapsado: Rotamos la flecha 90 grados a la derecha (▶) */
+.cornell-collapse-toggle.is-collapsed {
+    transform: rotate(-90deg);
+}
+
+.cornell-collapse-toggle.is-collapsed:hover {
+    transform: rotate(-90deg) scale(1.1);
+}
+
+/* Ocultamos a todos los hijos cuando el contenedor tiene esta clase */
+.cornell-thread-tree.is-collapsed {
+    display: none !important; 
+}
+
+/* ======================================================
+   🔍 ESTILOS PARA LA BARRA DE BÚSQUEDA Y FILTROS
+   ====================================================== */
+
+.cornell-sidebar-filters {
+    margin-bottom: 12px;
+    padding: 0 5px;
+}
+
+.cornell-search-bar {
+    width: 100%;
+    margin-bottom: 8px;
+    background-color: var(--background-modifier-form-field);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.9em;
+    color: var(--text-normal);
+}
+
+.cornell-search-bar:focus {
+    border-color: var(--interactive-accent);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(var(--interactive-accent), 0.2);
+}
+
+.cornell-color-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 5px;
+}
+
+.cornell-color-pill {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.2s ease;
+    opacity: 0.4; /* Apagado por defecto */
+}
+
+/* Efecto al encender el filtro */
+.cornell-color-pill.is-active {
+    opacity: 1;
+    transform: scale(1.2);
+    box-shadow: 0 0 5px currentColor;
+    border-color: var(--background-primary);
+}
+
+.cornell-color-pill:hover {
+    opacity: 0.8;
+}
+
+/* ======================================================
+   ⬆️ ESTILOS PARA EL BOTÓN "UP" (CONTEXTO DE FILTRO)
+   ====================================================== */
+
+.cornell-thread-up-btn {
+    font-size: 0.8em;
+    color: var(--text-muted);
+    cursor: pointer;
+    margin-bottom: 6px;
+    padding-left: 10px;
+    border-left: 2px solid var(--interactive-accent);
+    transition: all 0.2s ease;
+    display: inline-block;
+}
+
+.cornell-thread-up-btn:hover {
+    color: var(--text-normal);
+    text-decoration: underline;
+}
+
+.cornell-thread-up-btn b {
+    color: var(--text-normal);
+    font-weight: 500;
+}

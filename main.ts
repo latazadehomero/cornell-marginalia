@@ -23,7 +23,8 @@ interface CornellSettings {
     fontSize: string;
     fontFamily: string;
     tags: CornellTag[];
-    enableReadingView: boolean; // <- NUEVO
+    enableReadingView: boolean; // <- NUEVO: modo lectura
+    outgoingLinks: string[]; // <-- NUEVO: hilos
 }
 // barra lateral item
 interface MarginaliaItem {
@@ -49,12 +50,13 @@ const DEFAULT_SETTINGS: CornellSettings = {
     ]
 }
 
-// --- WIDGET DE MARGEN ---
+// --- WIDGET DE MARGEN (ACTUALIZADO PARA HILOS 🧵) ---
 class MarginNoteWidget extends WidgetType {
     constructor(
         readonly text: string, 
         readonly app: App, 
-        readonly customColor: string | null 
+        readonly customColor: string | null,
+        readonly sourcePath: string = "" // Necesario para que Obsidian sepa de dónde saltamos
     ) { super(); }
 
     toDOM(view: EditorView): HTMLElement {
@@ -66,11 +68,47 @@ class MarginNoteWidget extends WidgetType {
             div.style.color = this.customColor;       
         }
 
-        MarkdownRenderer.render(this.app, this.text, div, "", new Component());
+        // 1. CAZADOR DE ENLACES: Buscamos cualquier [[Enlace]] en el texto
+        const linkRegex = /\[\[(.*?)\]\]/g;
+        let finalRenderText = this.text;
+        const threadLinks: string[] = [];
         
+        let match;
+        while ((match = linkRegex.exec(this.text)) !== null) {
+            threadLinks.push(match[1]); // Guardamos el destino (ej. "Glaucoma#^123")
+            finalRenderText = finalRenderText.replace(match[0], '').trim(); // Borramos el [[...]] del texto visible
+        }
+
+        // 2. Renderizamos el texto limpio (sin los corchetes feos)
+        MarkdownRenderer.render(this.app, finalRenderText, div, this.sourcePath, new Component());
+        
+        // 3. Si encontramos enlaces, creamos los botones del "Hilo"
+        if (threadLinks.length > 0) {
+            const threadContainer = div.createDiv({ cls: 'cornell-thread-container' });
+            
+            threadLinks.forEach(linkTarget => {
+                const btn = threadContainer.createEl('button', { 
+                    cls: 'cornell-thread-btn', 
+                    title: `Follow thread: ${linkTarget}` 
+                });
+                
+                // Usamos un emoji de hilo o eslabón como ícono
+                btn.innerHTML = '🔗'; 
+                
+                // Lógica de teletransporte nativo de Obsidian
+                btn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation(); 
+                    // true = abre la nota en una pestaña nueva al lado (ideal para estudiar dos cosas a la vez)
+                    this.app.workspace.openLinkText(linkTarget, this.sourcePath, true); 
+                };
+            });
+        }
+
         div.onclick = (e) => {
             const target = e.target as HTMLElement;
-            if (target.tagName !== 'A') e.preventDefault();
+            // Evitamos bloquear el clic si tocamos nuestro nuevo botón
+            if (target.tagName !== 'A' && !target.hasClass('cornell-thread-btn')) e.preventDefault();
         };
         return div;
     }
@@ -156,7 +194,7 @@ const createCornellExtension = (app: App, settings: CornellSettings, getActiveRe
                 if (finalNoteText.length === 0) continue;
 
                 builder.add(matchStart, matchEnd, Decoration.replace({
-                    widget: new MarginNoteWidget(finalNoteText, app, matchedColor)
+                    widget: new MarginNoteWidget(finalNoteText, app, matchedColor, file?.path || "")
                 }));
             }
         }
@@ -169,10 +207,20 @@ const createCornellExtension = (app: App, settings: CornellSettings, getActiveRe
 // --- CONSTANTE DE LA VISTA ---
 export const CORNELL_VIEW_TYPE = "cornell-marginalia-view";
 
-// --- VISTA LATERAL (SIDEBAR EXPLORER) ---
+// --- VISTA LATERAL (SIDEBAR EXPLORER) ACTUALIZADA 🧵 ---
+// --- VISTA LATERAL (SIDEBAR EXPLORER) CON ÁRBOLES DE HILOS 🌳🧵 ---
+// --- VISTA LATERAL (EXPLORER) CON BUSCADOR INTELIGENTE Y CACHÉ 🔍🧠 ---
 class CornellNotesView extends ItemView {
     plugin: CornellMarginalia;
-    currentTab: 'current' | 'vault' = 'current';
+    currentTab: 'current' | 'vault' | 'threads' = 'current';
+    
+    isStitchingMode: boolean = false;
+    sourceStitchItem: MarginaliaItem | null = null;
+
+    // NUEVO: Variables de Memoria para el Buscador Instantáneo
+    searchQuery: string = '';
+    activeColorFilters: Set<string> = new Set();
+    cachedItems: MarginaliaItem[] = []; 
 
     constructor(leaf: WorkspaceLeaf, plugin: CornellMarginalia) {
         super(leaf);
@@ -197,38 +245,87 @@ class CornellNotesView extends ItemView {
 
         const controlsDiv = container.createDiv({ cls: 'cornell-sidebar-controls' });
         
-        const tabCurrent = controlsDiv.createEl("button", { text: "Current Note", cls: this.currentTab === 'current' ? 'cornell-tab-active' : '' });
-        const tabVault = controlsDiv.createEl("button", { text: "All Vault", cls: this.currentTab === 'vault' ? 'cornell-tab-active' : '' });
+        const tabCurrent = controlsDiv.createEl("button", { text: "Current", cls: this.currentTab === 'current' ? 'cornell-tab-active' : '' });
+        const tabVault = controlsDiv.createEl("button", { text: "Vault", cls: this.currentTab === 'vault' ? 'cornell-tab-active' : '' });
+        const tabThreads = controlsDiv.createEl("button", { text: "🧵 Threads", cls: this.currentTab === 'threads' ? 'cornell-tab-active' : '' });
+        
+        const btnStitch = controlsDiv.createEl("button", { text: "🔗 Stitch", title: "Connect two notes" });
         const btnRefresh = controlsDiv.createEl("button", { text: "🔄", title: "Refresh data" });
 
+        // --- NUEVO: PANEL DE FILTROS Y BÚSQUEDA ---
+        const filterContainer = container.createDiv({ cls: 'cornell-sidebar-filters' });
+        
+        // 1. Barra de búsqueda
+        const searchInput = filterContainer.createEl('input', { 
+            type: 'text', 
+            placeholder: '🔍 Search notes...', 
+            cls: 'cornell-search-bar' 
+        });
+        searchInput.value = this.searchQuery;
+        searchInput.oninput = (e) => {
+            this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
+            this.applyFiltersAndRender(); // Filtra al instante usando el caché
+        };
+
+        // 2. Píldoras de colores (Generadas a partir de tus Settings)
+        const pillsContainer = filterContainer.createDiv({ cls: 'cornell-color-pills' });
+        this.plugin.settings.tags.forEach(tag => {
+            const pill = pillsContainer.createEl('span', { cls: 'cornell-color-pill' });
+            pill.style.backgroundColor = tag.color;
+            pill.title = `Filter ${tag.prefix}`;
+            
+            if (this.activeColorFilters.has(tag.color)) pill.addClass('is-active');
+
+            pill.onclick = () => {
+                if (this.activeColorFilters.has(tag.color)) {
+                    this.activeColorFilters.delete(tag.color);
+                    pill.removeClass('is-active');
+                } else {
+                    this.activeColorFilters.add(tag.color);
+                    pill.addClass('is-active');
+                }
+                this.applyFiltersAndRender();
+            };
+        });
+        // ----------------------------------------
+
+        container.createDiv({ cls: 'cornell-stitch-banner', text: '' }).style.display = 'none';
         container.createDiv({ cls: 'cornell-sidebar-content' });
 
-        tabCurrent.onclick = async () => {
-            this.currentTab = 'current';
-            this.renderUI();
-            await this.scanNotes();
-        };
+        tabCurrent.onclick = async () => { this.currentTab = 'current'; this.renderUI(); await this.scanNotes(); };
+        tabVault.onclick = async () => { this.currentTab = 'vault'; this.renderUI(); await this.scanNotes(); };
+        tabThreads.onclick = async () => { this.currentTab = 'threads'; this.renderUI(); await this.scanNotes(); };
+        
+        btnRefresh.onclick = async () => { new Notice("Scanning..."); await this.scanNotes(); };
 
-        tabVault.onclick = async () => {
-            this.currentTab = 'vault';
-            this.renderUI();
-            await this.scanNotes();
+        btnStitch.onclick = () => {
+            this.isStitchingMode = !this.isStitchingMode;
+            this.sourceStitchItem = null; 
+            btnStitch.classList.toggle('cornell-tab-active', this.isStitchingMode);
+            this.updateStitchBanner();
         };
+    }
 
-        btnRefresh.onclick = async () => {
-            new Notice("Buscando marginalias...");
-            await this.scanNotes();
-        };
+    updateStitchBanner() {
+        const banner = this.containerEl.querySelector('.cornell-stitch-banner') as HTMLElement;
+        if (!this.isStitchingMode) { banner.style.display = 'none'; return; }
+        banner.style.display = 'block';
+        if (!this.sourceStitchItem) {
+            banner.innerText = "🔗 Step 1: Click the ORIGIN note...";
+            banner.style.backgroundColor = "var(--interactive-accent)";
+        } else {
+            banner.innerText = "🔗 Step 2: Click the DESTINATION note...";
+            banner.style.backgroundColor = "var(--color-green)";
+        }
     }
 
     async scanNotes() {
         const contentDiv = this.containerEl.querySelector('.cornell-sidebar-content') as HTMLElement;
         if (!contentDiv) return;
-        
         contentDiv.empty();
-        contentDiv.createEl('p', { text: 'Scanning...', cls: 'cornell-sidebar-empty' });
+        contentDiv.createEl('p', { text: 'Scanning vault...', cls: 'cornell-sidebar-empty' });
 
-        const results: Record<string, MarginaliaItem[]> = {};
+        const allItemsFlat: MarginaliaItem[] = []; 
         const defaultColor = 'var(--text-accent)'; 
 
         let filesToScan: TFile[] = [];
@@ -252,41 +349,192 @@ class CornellNotesView extends ItemView {
 
                 while ((match = lineRegex.exec(line)) !== null) {
                     let noteContent = match[1].trim();
+                    if (noteContent.endsWith(';;')) noteContent = noteContent.slice(0, -2).trim();
+
+                    const linkRegex = /\[\[(.*?)\]\]/g;
+                    const outgoingLinks: string[] = [];
+                    let cleanText = noteContent;
+                    let matchLink;
                     
-                    if (noteContent.endsWith(';;')) {
-                        noteContent = noteContent.slice(0, -2).trim();
+                    while ((matchLink = linkRegex.exec(noteContent)) !== null) {
+                        outgoingLinks.push(matchLink[1]);
+                        cleanText = cleanText.replace(matchLink[0], '').trim();
                     }
 
                     let matchedColor = defaultColor;
-                    let finalText = noteContent;
-
                     for (const tag of this.plugin.settings.tags) {
-                        if (finalText.startsWith(tag.prefix)) {
+                        if (cleanText.startsWith(tag.prefix)) {
                             matchedColor = tag.color;
-                            finalText = finalText.substring(tag.prefix.length).trim();
+                            cleanText = cleanText.substring(tag.prefix.length).trim();
                             break;
                         }
                     }
 
-                    if (finalText.length === 0) continue;
+                    if (cleanText.length === 0) continue;
 
-                    // NUEVO: Buscar si la línea ya tiene un Block ID (^algo)
                     const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)\s*$/);
                     const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
 
-                    if (!results[matchedColor]) results[matchedColor] = [];
-                    results[matchedColor].push({
-                        text: finalText,
+                    allItemsFlat.push({
+                        text: cleanText,
                         color: matchedColor,
                         file: file,
                         line: i,
-                        blockId: existingBlockId // <- Lo guardamos en memoria
+                        blockId: existingBlockId,
+                        outgoingLinks: outgoingLinks
                     });
                 }
             }
         }
+        
+        // Guardamos todo en memoria para búsquedas instantáneas
+        this.cachedItems = allItemsFlat;
+        this.applyFiltersAndRender();
+    }
 
-        this.renderResults(results, contentDiv);
+// --- NUEVO: MOTOR INTELIGENTE DE FILTRADO (LÓGICA INVERTIDA) ---
+    applyFiltersAndRender() {
+        const contentDiv = this.containerEl.querySelector('.cornell-sidebar-content') as HTMLElement;
+        if (!contentDiv) return;
+
+        const isFilterActive = this.searchQuery.length > 0 || this.activeColorFilters.size > 0;
+
+        const matchesFilter = (item: MarginaliaItem) => {
+            const matchesSearch = item.text.toLowerCase().includes(this.searchQuery) || item.file.basename.toLowerCase().includes(this.searchQuery);
+            const matchesColor = this.activeColorFilters.size === 0 || this.activeColorFilters.has(item.color);
+            return matchesSearch && matchesColor;
+        };
+
+        if (this.currentTab === 'threads') {
+            if (!isFilterActive) {
+                // SIN FILTROS: Lógica normal (Buscamos Raíces Absolutas)
+                const allTargetIds = new Set<string>();
+                this.cachedItems.forEach(item => {
+                    item.outgoingLinks.forEach(l => {
+                        const parts = l.split('#^');
+                        if (parts.length === 2) allTargetIds.add(parts[1]);
+                    });
+                });
+
+                const rootItems = this.cachedItems.filter(item => 
+                    item.outgoingLinks.length > 0 && (!item.blockId || !allTargetIds.has(item.blockId))
+                );
+                this.renderThreads(rootItems, contentDiv, false);
+
+            } else {
+                // CON FILTROS: Las notas que coinciden se convierten en las NUEVAS raíces
+                const matchingItems = this.cachedItems.filter(matchesFilter);
+                
+                // Evitamos dibujar sub-árboles repetidos (Si A y B coinciden, y A apunta a B, solo dibujamos A)
+                const topLevelMatches = matchingItems.filter(item => {
+                    const isChildOfAnotherMatch = matchingItems.some(parent => 
+                        item.blockId && parent.outgoingLinks.some(link => link.includes(`#^${item.blockId}`))
+                    );
+                    return !isChildOfAnotherMatch;
+                });
+
+                // Le avisamos al renderizador que estamos en "Modo Filtro"
+                this.renderThreads(topLevelMatches, contentDiv, true);
+            }
+
+        } else {
+            // Lógica para Current y Vault
+            const filtered = this.cachedItems.filter(matchesFilter);
+            const results: Record<string, MarginaliaItem[]> = {};
+            
+            filtered.forEach(item => {
+                if (!results[item.color]) results[item.color] = [];
+                results[item.color].push(item);
+            });
+            
+            this.renderResults(results, contentDiv);
+        }
+    }
+
+    // --- RENDERIZADOR PRINCIPAL ---
+    renderThreads(rootItems: MarginaliaItem[], container: HTMLElement, isFilteredMode: boolean = false) {
+        container.empty();
+        if (rootItems.length === 0) {
+            container.createEl('p', { text: 'No matching threads found.', cls: 'cornell-sidebar-empty' });
+            return;
+        }
+
+        for (const root of rootItems) {
+            const threadGroup = container.createDiv({ cls: 'cornell-thread-parent' });
+            // Pasamos isFilteredMode y le decimos que ESTA nota es la primera (isRootCall = true)
+            this.renderThreadNode(root, threadGroup, this.cachedItems, new Set<string>(), isFilteredMode, true);
+        }
+    }
+
+    // --- MOTOR RECURSIVO (CON BOTÓN "UP" ⬆️) ---
+    renderThreadNode(item: MarginaliaItem, container: HTMLElement, allItems: MarginaliaItem[], visitedIds: Set<string>, isFilteredMode: boolean = false, isRootCall: boolean = false) {
+        if (item.blockId && visitedIds.has(item.blockId)) {
+            const brokenDiv = container.createDiv({ cls: 'cornell-sidebar-item' });
+            brokenDiv.style.borderLeftColor = 'red';
+            brokenDiv.createDiv({ cls: 'cornell-sidebar-item-text', text: `🔁 Loop detected! (${item.file.basename})` });
+            return;
+        }
+
+        const newVisited = new Set(visitedIds);
+        if (item.blockId) newVisited.add(item.blockId);
+
+        const nodeWrapper = container.createDiv({ cls: 'cornell-node-wrapper' });
+
+        // --- NUEVO: BOTÓN "PROVIENE DE..." (Solo se muestra si filtramos y es la nota superior) ---
+        if (isFilteredMode && isRootCall && item.blockId) {
+            // Buscamos quién lo conectó
+            const parentNode = allItems.find(p => p.outgoingLinks.some(link => link.includes(`#^${item.blockId}`)));
+            if (parentNode) {
+                const upBtn = nodeWrapper.createDiv({ cls: 'cornell-thread-up-btn', title: 'Go to parent note' });
+                upBtn.innerHTML = `↑ Child of: <b>${parentNode.file.basename}</b>`;
+                
+                // Al tocarlo, te teletransporta al Padre
+                upBtn.onclick = async () => {
+                    const leaf = this.plugin.app.workspace.getLeaf(false);
+                    await leaf.openFile(parentNode.file, { eState: { line: parentNode.line } });
+                };
+            }
+        }
+
+        const itemDiv = this.createItemDiv(item, nodeWrapper);
+        itemDiv.style.position = 'relative';
+
+        if (item.outgoingLinks.length > 0) {
+            const toggleBtn = itemDiv.createDiv({ cls: 'cornell-collapse-toggle' });
+            toggleBtn.innerHTML = '▼';
+            itemDiv.prepend(toggleBtn); 
+
+            const childrenContainer = nodeWrapper.createDiv({ cls: 'cornell-thread-tree' });
+
+            toggleBtn.onclick = (e) => {
+                e.stopPropagation(); 
+                const isCollapsed = childrenContainer.hasClass('is-collapsed');
+                if (isCollapsed) {
+                    childrenContainer.removeClass('is-collapsed');
+                    toggleBtn.removeClass('is-collapsed');
+                } else {
+                    childrenContainer.addClass('is-collapsed');
+                    toggleBtn.addClass('is-collapsed');
+                }
+            };
+
+            for (const linkStr of item.outgoingLinks) {
+                const parts = linkStr.split('#^');
+                if (parts.length === 2) {
+                    const targetId = parts[1];
+                    const childItem = allItems.find(i => i.blockId === targetId);
+                    
+                    if (childItem) {
+                        // isRootCall se vuelve false porque estos son los hijos
+                        this.renderThreadNode(childItem, childrenContainer, allItems, newVisited, isFilteredMode, false);
+                    } else {
+                        const brokenDiv = childrenContainer.createDiv({ cls: 'cornell-sidebar-item' });
+                        brokenDiv.style.borderLeftColor = 'gray';
+                        brokenDiv.createDiv({ cls: 'cornell-sidebar-item-text', text: `⚠️ Broken link: ${linkStr}` });
+                    }
+                }
+            }
+        }
     }
 
     renderResults(results: Record<string, MarginaliaItem[]>, container: HTMLElement) {
@@ -303,48 +551,78 @@ class CornellNotesView extends ItemView {
             groupHeader.createSpan({ text: `${items.length} notes` });
 
             for (const item of items) {
-                const itemDiv = container.createDiv({ cls: 'cornell-sidebar-item' });
-                itemDiv.style.borderLeftColor = color;
-
-                itemDiv.createDiv({ cls: 'cornell-sidebar-item-text', text: item.text });
-                itemDiv.createDiv({ cls: 'cornell-sidebar-item-meta', text: `${item.file.basename} (L${item.line + 1})` });
-
-                itemDiv.onclick = async () => {
-                    const leaf = this.plugin.app.workspace.getLeaf(false);
-                    await leaf.openFile(item.file, { eState: { line: item.line } });
-                };
-
-                // EVENTO DRAG & DROP INSTANTÁNEO
-                itemDiv.setAttr('draggable', 'true');
-                
-                itemDiv.addEventListener('dragstart', (event: DragEvent) => {
-                    if (!event.dataTransfer) return;
-                    event.dataTransfer.effectAllowed = 'copy';
-
-                    let targetId = item.blockId;
-
-                    // Si no tiene ID, lo creamos en memoria y lanzamos la inyección fantasma
-                    if (!targetId) {
-                        targetId = Math.random().toString(36).substring(2, 8);
-                        item.blockId = targetId; 
-                        
-                        // Inyección en segundo plano (Nota: sin await)
-                        this.injectBackgroundBlockId(item.file, item.line, targetId);
-                    }
-
-                    // Formamos el enlace
-                    const dragPayload = `[[${item.file.basename}#^${targetId}|${item.text}]]`;
-                    event.dataTransfer.setData('text/plain', dragPayload);
-                });
+                this.createItemDiv(item, container);
             }
         }
-
-        if (totalFound === 0) {
-            container.createEl('p', { text: 'No marginalia found.', cls: 'cornell-sidebar-empty' });
-        }
+        if (totalFound === 0) container.createEl('p', { text: 'No notes match your search.', cls: 'cornell-sidebar-empty' });
     }
 
-    // --- INYECCIÓN FANTASMA EN SEGUNDO PLANO ---
+    createItemDiv(item: MarginaliaItem, parentContainer: HTMLElement): HTMLElement {
+        const itemDiv = parentContainer.createDiv({ cls: 'cornell-sidebar-item' });
+        itemDiv.style.borderLeftColor = item.color;
+
+        itemDiv.createDiv({ cls: 'cornell-sidebar-item-text', text: item.text });
+        itemDiv.createDiv({ cls: 'cornell-sidebar-item-meta', text: `${item.file.basename} (L${item.line + 1})` });
+
+        itemDiv.onclick = async () => {
+            if (this.isStitchingMode) {
+                if (!this.sourceStitchItem) {
+                    this.sourceStitchItem = item;
+                    itemDiv.style.backgroundColor = "var(--background-modifier-hover)";
+                    this.updateStitchBanner();
+                } else {
+                    if (this.sourceStitchItem === item) {
+                        new Notice("Cannot connect a note to itself.");
+                        return;
+                    }
+                    await this.executeStitch(this.sourceStitchItem, item);
+                    this.isStitchingMode = false;
+                    this.sourceStitchItem = null;
+                    this.updateStitchBanner();
+                    await this.scanNotes();
+                }
+                return;
+            }
+            const leaf = this.plugin.app.workspace.getLeaf(false);
+            await leaf.openFile(item.file, { eState: { line: item.line } });
+        };
+
+        itemDiv.setAttr('draggable', 'true');
+        itemDiv.addEventListener('dragstart', (event: DragEvent) => {
+            if (!event.dataTransfer) return;
+            event.dataTransfer.effectAllowed = 'copy';
+            let targetId = item.blockId;
+            if (!targetId) {
+                targetId = Math.random().toString(36).substring(2, 8);
+                item.blockId = targetId; 
+                this.injectBackgroundBlockId(item.file, item.line, targetId);
+            }
+            const dragPayload = `[[${item.file.basename}#^${targetId}|${item.text}]]`;
+            event.dataTransfer.setData('text/plain', dragPayload);
+        });
+
+        return itemDiv;
+    }
+
+    async executeStitch(source: MarginaliaItem, target: MarginaliaItem) {
+        new Notice("Cosiendo hilo...");
+        let targetId = target.blockId;
+        if (!targetId) {
+            targetId = Math.random().toString(36).substring(2, 8);
+            await this.injectBackgroundBlockId(target.file, target.line, targetId);
+        }
+        const linkToInject = ` [[${target.file.basename}#^${targetId}]]`;
+
+        await this.plugin.app.vault.process(source.file, (data) => {
+            const lines = data.split('\n');
+            if (source.line >= 0 && source.line < lines.length) {
+                lines[source.line] = lines[source.line].replace(source.text, source.text + linkToInject);
+            }
+            return lines.join('\n');
+        });
+        new Notice("¡Hilo conectado con éxito! 🔗");
+    }
+
     async injectBackgroundBlockId(file: TFile, lineIndex: number, newId: string) {
         await this.plugin.app.vault.process(file, (data) => {
             const lines = data.split('\n');
@@ -518,8 +796,19 @@ export default class CornellMarginalia extends Plugin {
                         }
                     }
 
-                    // Prevenir cajas vacías
+// Prevenir cajas vacías
                     if (finalNoteText.length === 0) continue;
+
+                    // 1. CAZADOR DE ENLACES PARA MODO LECTURA
+                    const linkRegex = /\[\[(.*?)\]\]/g;
+                    let finalRenderText = finalNoteText;
+                    const threadLinks: string[] = [];
+                    
+                    let matchLink;
+                    while ((matchLink = linkRegex.exec(finalNoteText)) !== null) {
+                        threadLinks.push(matchLink[1]);
+                        finalRenderText = finalRenderText.replace(matchLink[0], '').trim();
+                    }
 
                     const marginDiv = document.createElement("div");
                     marginDiv.className = "cm-cornell-margin reading-mode-margin"; 
@@ -529,7 +818,25 @@ export default class CornellMarginalia extends Plugin {
                         marginDiv.style.setProperty('color', matchedColor, 'important');
                     }
 
-                    MarkdownRenderer.render(this.app, finalNoteText, marginDiv, ctx.sourcePath, this);
+                    // 2. Renderizamos el texto limpio
+                    MarkdownRenderer.render(this.app, finalRenderText, marginDiv, ctx.sourcePath, this);
+
+                    // 3. Inyectamos los botones del hilo si existen
+                    if (threadLinks.length > 0) {
+                        const threadContainer = marginDiv.createDiv({ cls: 'cornell-thread-container' });
+                        threadLinks.forEach(linkTarget => {
+                            const btn = threadContainer.createEl('button', { 
+                                cls: 'cornell-thread-btn', 
+                                title: `Follow thread: ${linkTarget}` 
+                            });
+                            btn.innerHTML = '🔗'; 
+                            btn.onclick = (e) => {
+                                e.preventDefault();
+                                e.stopPropagation(); 
+                                this.app.workspace.openLinkText(linkTarget, ctx.sourcePath, true); 
+                            };
+                        });
+                    }
 
                     currentTarget.classList.add('cornell-reading-block');
                     currentTarget.appendChild(marginDiv);

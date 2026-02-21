@@ -45,7 +45,7 @@ To fix this and force Obsidian to treat them as a single block, wrap your text i
 
 
 > [!cornell]
-> %%> Your margin note here %%
+>%%> Your margin note here %%
 > This is my introductory paragraph:
 > - List item 1
 > - List item 2

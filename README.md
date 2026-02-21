@@ -43,13 +43,13 @@ Obsidian treats paragraphs and lists as completely separate blocks. If you add a
 
 To fix this and force Obsidian to treat them as a single block, wrap your text in our official invisible callout `> [!cornell]`:
 
-
+```
 > [!cornell]
->%%> Your margin note here %%
+> %%> Your margin note here %%
 > This is my introductory paragraph:
 > - List item 1
 > - List item 2
-
+```
 The plugin will automatically hide the callout background, borders, and title. It will look exactly like normal text, but your margin note will perfectly align alongside the entire group!
 
 ### 4. 🖼️ Adding Images (Multimedia Support) [NEW]

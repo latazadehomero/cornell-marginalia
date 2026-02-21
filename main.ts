@@ -29,6 +29,7 @@ interface MarginaliaItem {
     blockId: string | null;
     outgoingLinks: string[];
     isTitle?: boolean;
+    indentLevel?: number;
 }
 
 const DEFAULT_SETTINGS: CornellSettings = {
@@ -553,61 +554,87 @@ class CornellNotesView extends ItemView {
     renderPinboardTab(container: HTMLElement) {
         container.empty();
 
-        if (this.pinboardItems.length === 0) {
-            container.createEl('p', { text: 'Your Pinboard is empty. Hover over any note and click the ○ icon to pin it here.', cls: 'cornell-sidebar-empty' });
-            return;
-        }
+        // 1. SIEMPRE DIBUJAR LOS CONTROLES PRIMERO (Incluso si está vacío)
+        const topControls = container.createDiv({ cls: 'cornell-pinboard-controls' });
+        topControls.style.display = 'flex';
+        topControls.style.flexDirection = 'column';
+        topControls.style.gap = '10px';
+        topControls.style.marginBottom = '20px';
 
-        const exportBtn = container.createEl('button', { text: 'Export to Note', title: "Compile these notes into a new file" });
-        exportBtn.style.width = '100%';
-        exportBtn.style.marginBottom = '15px';
+        const exportRow = topControls.createDiv();
+        exportRow.style.display = 'flex';
+        exportRow.style.gap = '5px';
+
+        const exportBtn = exportRow.createEl('button', { text: '📝 Note' });
+        exportBtn.style.flex = '1';
         exportBtn.style.backgroundColor = 'var(--interactive-accent)';
         exportBtn.style.color = 'var(--text-on-accent)';
         exportBtn.style.fontWeight = 'bold';
-        exportBtn.style.borderRadius = '6px';
-        exportBtn.style.padding = '8px';
         exportBtn.style.border = 'none';
         exportBtn.style.cursor = 'pointer';
+        exportBtn.onclick = () => this.exportPinboard();
 
-        // 🧠 1. INPUT PARA TÍTULOS 
-        const titleRow = container.createDiv();
+        const exportMindmapBtn = exportRow.createEl('button', { text: '📋 Clip' });
+        exportMindmapBtn.style.flex = '1';
+        exportMindmapBtn.style.backgroundColor = 'var(--color-green)';
+        exportMindmapBtn.style.color = '#fff';
+        exportMindmapBtn.style.fontWeight = 'bold';
+        exportMindmapBtn.style.border = 'none';
+        exportMindmapBtn.style.cursor = 'pointer';
+        exportMindmapBtn.onclick = () => this.exportMindmap();
+
+        // 🎨 NUEVO: BOTÓN DE EXPORTAR A CANVAS
+        const exportCanvasBtn = exportRow.createEl('button', { text: '🎨 Canvas' });
+        exportCanvasBtn.style.flex = '1';
+        exportCanvasBtn.style.backgroundColor = 'var(--color-purple)'; 
+        exportCanvasBtn.style.color = '#fff';
+        exportCanvasBtn.style.fontWeight = 'bold';
+        exportCanvasBtn.style.border = 'none';
+        exportCanvasBtn.style.cursor = 'pointer';
+        exportCanvasBtn.onclick = () => this.exportCanvas();
+
+        const titleRow = topControls.createDiv();
         titleRow.style.display = 'flex';
         titleRow.style.gap = '5px';
-        titleRow.style.marginBottom = '15px';
 
-        const titleInput = titleRow.createEl('input', { type: 'text', placeholder: 'Add title (e.g., ## My amazing title)' });
+        const titleInput = titleRow.createEl('input', { type: 'text', placeholder: 'Add title (Ej: ## My amazing title)' });
         titleInput.style.flexGrow = '1';
         titleInput.style.backgroundColor = 'var(--background-modifier-form-field)';
         titleInput.style.border = '1px solid var(--background-modifier-border)';
 
-        const addTitleBtn = titleRow.createEl('button', { text: '✚' });
+        const addTitleBtn = titleRow.createEl('button', { text: '➕' });
         addTitleBtn.onclick = () => {
             const val = titleInput.value.trim();
             if (val) {
-                // Truco: Guardamos el título como si fuera una marginalia fantasma
                 this.pinboardItems.push({ 
                     text: val, rawText: val, color: 'transparent', 
                     file: null as any, line: -1, blockId: null, outgoingLinks: [], isTitle: true 
                 });
-                this.applyFiltersAndRender(); // Recarga la vista
+                this.applyFiltersAndRender(); 
             }
         };
 
-        exportBtn.onclick = () => this.exportPinboard();
+        // 2.  NO DIBUJAR LISTA FANTASMA
+        if (this.pinboardItems.length === 0) {
+            container.createEl('p', { text: 'Your Board is empty. Start by adding a title or pinning notes!', cls: 'cornell-sidebar-empty' });
+            return;
+        }
 
-        // 🧠 2. MOTOR DE RENDERIZADO Y REORDENAMIENTO
+        // 3. MOTOR DE RENDERIZADO Y REORDENAMIENTO
         let draggedIndex: number | null = null;
         const listContainer = container.createDiv();
 
         this.pinboardItems.forEach((item, index) => {
-            // Creamos un wrapper arrastrable para cada elemento
             let itemWrapper = listContainer.createDiv();
             itemWrapper.setAttr('draggable', 'true');
             itemWrapper.style.cursor = 'grab';
             itemWrapper.style.marginBottom = '5px';
+            
+            const indent = item.indentLevel || 0;
+            itemWrapper.style.marginLeft = `${indent * 20}px`;
+            itemWrapper.style.transition = 'margin-left 0.2s ease';
 
             if (item.isTitle) {
-                // --- DIBUJAR TÍTULO ---
                 itemWrapper.style.padding = '10px 5px';
                 itemWrapper.style.marginTop = '15px';
                 itemWrapper.style.borderBottom = '2px solid var(--interactive-accent)';
@@ -618,28 +645,29 @@ class CornellNotesView extends ItemView {
 
                 const match = item.text.match(/^(#+)\s(.*)/);
                 itemWrapper.style.fontSize = match ? (match[1].length === 1 ? '1.4em' : '1.25em') : '1.1em';
-                
                 itemWrapper.createSpan({ text: match ? match[2] : item.text });
                 
                 const delBtn = itemWrapper.createSpan({ text: '×', title: 'Borrar título' });
                 delBtn.style.cursor = 'pointer';
                 delBtn.onclick = () => { this.pinboardItems.splice(index, 1); this.applyFiltersAndRender(); };
             } else {
-                // --- DIBUJAR NOTA NORMAL ---
                 const marginaliaDOM = this.createItemDiv(item, itemWrapper, true, index);
-                // Apagamos el drag de costura para no interferir con el drag de reordenamiento
                 marginaliaDOM.setAttr('draggable', 'false'); 
             }
 
-            // --- LÓGICA DE DRAG & DROP INTERNO ---
+            // LÓGICA DE DRAG & DROP INTERNO BLINDADA
             itemWrapper.addEventListener('dragstart', (e) => { draggedIndex = index; itemWrapper.style.opacity = '0.4'; e.stopPropagation(); });
             itemWrapper.addEventListener('dragover', (e) => { e.preventDefault(); itemWrapper.style.borderTop = '3px solid var(--interactive-accent)'; });
             itemWrapper.addEventListener('dragleave', () => { itemWrapper.style.borderTop = ''; });
             itemWrapper.addEventListener('drop', (e) => {
                 e.preventDefault(); e.stopPropagation(); itemWrapper.style.borderTop = '';
                 if (draggedIndex !== null && draggedIndex !== index) {
-                    const draggedItem = this.pinboardItems.splice(draggedIndex, 1)[0];
-                    this.pinboardItems.splice(index, 0, draggedItem);
+                    // Magia de reordenamiento matemático preciso
+                    const itemToMove = this.pinboardItems[draggedIndex];
+                    this.pinboardItems.splice(draggedIndex, 1);
+                    // Como el array se encogió, si movimos de arriba hacia abajo, el índice de destino se redujo
+                    const targetIndex = draggedIndex < index ? index - 1 : index;
+                    this.pinboardItems.splice(targetIndex, 0, itemToMove);
                     this.applyFiltersAndRender();
                 }
             });
@@ -695,6 +723,139 @@ class CornellNotesView extends ItemView {
             new Notice('Error creating Pinboard file. Check console.');
         }
     }
+// 🌳 NUEVA FUNCIÓN: Exportador al Portapapeles para Mindmaps (Excalidraw)
+    async exportMindmap() {
+        if (this.pinboardItems.length === 0) {
+            new Notice('Empty Board ');
+            return;
+        }
+
+        let content = "";
+
+        for (const item of this.pinboardItems) {
+            if (item.isTitle) {
+                // Títulos principales
+                const text = item.text.startsWith('#') ? item.text : `# ${item.text}`;
+                content += `${text}\n`;
+            } else {
+                // Creamos los espacios de sangría según el nivel
+                const indentSpaces = "\t".repeat(item.indentLevel || 0); // Excalidraw prefiere tabulaciones, pero puedes usar "  " si falla
+                
+                let targetId = item.blockId;
+                if (!targetId) {
+                    targetId = Math.random().toString(36).substring(2, 8);
+                    item.blockId = targetId;
+                    await this.injectBackgroundBlockId(item.file, item.line, targetId);
+                }
+
+                // Imprimimos la viñeta con el enlace a la nota original
+                content += `${indentSpaces}- [[${item.file.basename}#^${targetId}|${item.text}]]\n`;
+            }
+        }
+
+        try {
+            // 🧠 LA MAGIA: Inyectar directamente en el portapapeles del sistema operativo
+            await navigator.clipboard.writeText(content);
+            new Notice('📋 Mindmap copied to clipboard! Go to Excalidraw and press Alt+V');
+        } catch (error) {
+            new Notice('Error al copiar al portapapeles. Revisa la consola.');
+            console.error(error);
+        }
+    }
+    // 🎨 NUEVO MOTOR: Generador Automático de Canvas (Tablero de Evidencia)
+    async exportCanvas() {
+        if (this.pinboardItems.length === 0) return;
+
+        // @ts-ignore
+        const dateStr = window.moment().format('YYYY-MM-DD_HH-mm-ss');
+        const fileName = `EvidenceBoard_${dateStr}.canvas`;
+
+        const nodes: any[] = [];
+        const edges: any[] = [];
+        
+        // Generador de IDs hexadecimales de 16 caracteres (requerido por Canvas)
+        const genId = () => [...Array(16)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
+
+        let currentY = 0; // Controla la altura vertical
+        let lastTitleId: string | null = null;
+        let parentAtLevel: Record<number, string> = {};
+
+        for (const item of this.pinboardItems) {
+            const nodeId = genId();
+
+            if (item.isTitle) {
+                // 🏷️ NODO TÍTULO (Grande, a la izquierda)
+                const titleText = item.text.startsWith('#') ? item.text : `# ${item.text}`;
+                nodes.push({ id: nodeId, type: "text", text: titleText, x: 0, y: currentY, width: 350, height: 100, color: "1" }); // Color 1 = Rojo/Naranja
+                
+                lastTitleId = nodeId;
+                parentAtLevel = {}; // Reiniciamos el árbol de herencia
+                parentAtLevel[-1] = nodeId; 
+                currentY += 150; // Bajamos el cursor
+            } else {
+                const indent = item.indentLevel || 0;
+                const baseX = (indent + 1) * 450; // Calculamos la posición X (Sangría)
+
+                let targetId = item.blockId;
+                if (!targetId) {
+                    targetId = Math.random().toString(36).substring(2, 8);
+                    item.blockId = targetId;
+                    await this.injectBackgroundBlockId(item.file, item.line, targetId);
+                }
+
+                // 📌 1. NODO MARGINALIA
+                const noteText = `**Marginalia:**\n${item.text}\n\n[[${item.file.basename}#^${targetId}|🔗 Origin]]`;
+                nodes.push({ id: nodeId, type: "text", text: noteText, x: baseX, y: currentY, width: 300, height: 140, color: "4" }); // Color 4 = Verde
+
+                // 🧵 2. CONECTAR CON SU PADRE (Título o Marginalia anterior)
+                const parentId = parentAtLevel[indent - 1] || lastTitleId;
+                if (parentId) {
+                    edges.push({ id: genId(), fromNode: parentId, fromSide: "right", toNode: nodeId, toSide: "left" });
+                }
+                parentAtLevel[indent] = nodeId;
+
+                // 📚 3. EXTRAER EL TEXTO DEL HOVER (El Párrafo Real)
+                const fileContent = await this.plugin.app.vault.cachedRead(item.file);
+                const lines = fileContent.split('\n');
+                
+                // Leemos la línea exacta, la anterior y la posterior (Como hace tu Rayos X visual)
+                const startLine = Math.max(0, item.line - 1);
+                const endLine = Math.min(lines.length - 1, item.line + 1);
+                
+                let contextText = '';
+                for (let i = startLine; i <= endLine; i++) {
+                    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                    if (cleanLine) contextText += cleanLine + '\n';
+                }
+                contextText = contextText.trim();
+
+                // 📄 4. NODO CONTEXTO (Despliega la rama a la derecha)
+                if (contextText) {
+                    const contextNodeId = genId();
+                    // Lo dibujamos 400px a la derecha de la marginalia
+                    nodes.push({ id: contextNodeId, type: "text", text: `> ${contextText}`, x: baseX + 400, y: currentY - 20, width: 450, height: 180 });
+                    // Trazamos la flecha
+                    edges.push({ id: genId(), fromNode: nodeId, fromSide: "right", toNode: contextNodeId, toSide: "left" });
+                }
+
+                currentY += 220; // Bajamos el cursor verticalmente para la siguiente carta
+            }
+        }
+
+        // Ensamblamos el JSON del Canvas
+        const canvasData = JSON.stringify({ nodes, edges }, null, 2);
+
+        try {
+            const newFile = await this.plugin.app.vault.create(fileName, canvasData);
+            await this.plugin.app.workspace.getLeaf(true).openFile(newFile);
+            new Notice('🎨 Evidence Board created successfully!');
+            // Opcional: Vaciar corcho -> this.pinboardItems = []; this.applyFiltersAndRender();
+        } catch (error) {
+            new Notice('Error creating Canvas file. Check console.');
+            console.error(error);
+        }
+    }
+
 
     renderGroupedByContent(groupedResults: Record<string, MarginaliaItem[]>, container: HTMLElement) {
         container.empty();
@@ -953,6 +1114,30 @@ class CornellNotesView extends ItemView {
         textRow.style.alignItems = 'flex-start';
 
         const textSpan = textRow.createSpan({ text: item.text });
+        // 🧠 NUEVO: Controles de Jerarquía solo visibles en el Pinboard
+        if (isPinboardView) {
+            const indentControls = textRow.createSpan();
+            indentControls.style.marginLeft = '10px';
+            indentControls.style.marginRight = 'auto'; // Empuja los pines a la derecha
+            indentControls.style.opacity = '0.5';
+
+            const btnLeft = indentControls.createEl('span', { text: '←', title: 'Outdent' });
+            btnLeft.style.cursor = 'pointer';
+            btnLeft.style.marginRight = '8px';
+            btnLeft.onclick = (e) => { 
+                e.stopPropagation(); 
+                item.indentLevel = Math.max(0, (item.indentLevel || 0) - 1); 
+                this.applyFiltersAndRender(); 
+            };
+
+            const btnRight = indentControls.createEl('span', { text: '→', title: 'Indent' });
+            btnRight.style.cursor = 'pointer';
+            btnRight.onclick = (e) => { 
+                e.stopPropagation(); 
+                item.indentLevel = (item.indentLevel || 0) + 1; 
+                this.applyFiltersAndRender(); 
+            };
+        }
         textSpan.style.flexGrow = '1';
 
         const isAlreadyPinned = this.pinboardItems.some(p => p.rawText === item.rawText && p.file.path === item.file.path);
@@ -1092,7 +1277,8 @@ class CornellNotesView extends ItemView {
         });
 
         itemDiv.addEventListener('mouseleave', removeTooltip);
-
+        
+        if (!isPinboardView) {
         itemDiv.setAttr('draggable', 'true');
         itemDiv.addEventListener('dragstart', (event: DragEvent) => {
             removeTooltip(); 
@@ -1141,7 +1327,7 @@ class CornellNotesView extends ItemView {
                 this.draggedSidebarItems = null;
             }
         });
-
+    }
         return itemDiv;
     }
 

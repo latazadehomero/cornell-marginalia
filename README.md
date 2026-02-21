@@ -144,6 +144,12 @@ Why limit your connections to main text? You can now stitch your marginalia note
 * **Native Drawing Canvas:** Trigger the new `Draw a Doodle` command to open a distraction-free floating canvas. Supports both mouse and stylus/drawing tablets.
 * **Auto-Injection:** Clicking "Save to Margin" automatically saves your sketch as a PNG in your vault and injects the image syntax into your active note. 
 
+### 14. **⚡ The Omni-Capture Engine:**
+* **Global Quick Capture:** Trigger the new `Omni-Capture` command (`Alt+C` recommended) from anywhere in Obsidian. A sleek, distraction-free modal will appear to capture your thoughts instantly.
+* **Smart Clipboard & Image Support:** The modal automatically reads your clipboard text to use as context. You can also paste (`Ctrl+V`) screenshots or images directly into the modal, which will generate a live preview and save the image securely to your vault.
+* **Integrated Doodle Canvas:** Need to sketch your idea? The Omni-Capture modal includes a hidden drawing canvas. Click "Add Doodle" to sketch with your mouse or tablet and attach it to your thought.
+* **Vault Autocomplete & Memory:** The destination input now auto-suggests `.md` files from your vault and remembers your last used destination (e.g., `Marginalia Inbox.md`), ensuring a blazing-fast GTD (Getting Things Done) workflow.
+
 ### ⚡ Shortcuts & Commands
 
 You don't need to type %%> manually every time or dig through settings! The plugin includes smart commands to speed up your workflow.

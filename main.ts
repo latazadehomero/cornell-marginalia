@@ -5504,55 +5504,70 @@ this.registerEvent(
         const activeFile = this.app.workspace.getActiveFile();
         const sourcePath = activeFile ? activeFile.path : "";
 
-        const newContent = content.replace(/%%([><])(.*?)%%/g, (match, direction, noteContent) => {
-            modified = true;
-            let finalText = noteContent.trim();
-            
-            // 1. Limpiar sintaxis de flashcards
-            if (finalText.endsWith(';;')) {
-                finalText = finalText.slice(0, -2).trim();
-            }
+        const lines = content.split('\n');
+        const newLines = lines.map(line => {
+            const regex = /%%([><])(.*?)%%/g;
+            let match;
+            let marginaliasToInject = "";
+            let cleanLine = line;
 
-            // 2. Extraer el color (Tags)
-            let matchedColor = 'var(--text-accent)';
-            for (const tag of this.settings.tags) {
-                if (finalText.startsWith(tag.prefix)) {
-                    matchedColor = tag.color;
-                    finalText = finalText.substring(tag.prefix.length).trim();
-                    break;
-                }
-            }
+            while ((match = regex.exec(cleanLine)) !== null) {
+                modified = true;
+                const fullMatch = match[0];
+                const direction = match[1];
+                let noteContent = match[2];
 
-            // 3. CAZADOR DE IMÁGENES: Convertir a HTML nativo
-            const imgRegex = /img:\s*\[\[(.*?)\]\]/gi;
-            let imgHtml = "";
-            
-            // 🛠️ FIX: Le decimos a TypeScript qué es el arreglo completo usando 'as'
-            const imgMatches = Array.from(finalText.matchAll(imgRegex)) as RegExpMatchArray[];
-            
-            imgMatches.forEach(m => {
-                const imgName = m[1].split('|')[0]; // Limpiamos si tiene tamaño (ej. imagen.png|200)
-                const file = this.app.metadataCache.getFirstLinkpathDest(imgName, sourcePath);
+                let finalText = noteContent.trim();
                 
-                if (file) {
-                    // Obtenemos la ruta real (app://local/...) que el exportador PDF sí entiende
-                    const imgSrc = this.app.vault.getResourcePath(file);
-                    imgHtml += `<img src="${imgSrc}" style="max-width: 100%; border-radius: 4px; margin-top: 5px; display: block;" />`;
+                if (finalText.endsWith(';;')) {
+                    finalText = finalText.slice(0, -2).trim();
                 }
-            });
-            
-            // Borramos la sintaxis de imagen del texto
-            finalText = finalText.replace(imgRegex, '').trim(); 
 
-            // 4. CAZADOR DE ENLACES: Borrar las conexiones "Thread" de la vista de impresión
-            const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
-            finalText = finalText.replace(linkRegex, '').trim();
+                let matchedColor = 'var(--text-accent)';
+                for (const tag of this.settings.tags) {
+                    if (finalText.startsWith(tag.prefix)) {
+                        matchedColor = tag.color;
+                        finalText = finalText.substring(tag.prefix.length).trim();
+                        break;
+                    }
+                }
 
-            const safeOriginal = encodeURIComponent(match);
-            
-            // Ensamblamos el span con el texto limpio y las imágenes inyectadas
-            return `<span class="cornell-print-margin" data-original="${safeOriginal}" style="border-right: 3px solid ${matchedColor}; color: ${matchedColor};">${finalText}${imgHtml}</span>`;
+                const imgRegex = /img:\s*\[\[(.*?)\]\]/gi;
+                let imgHtml = "";
+                const imgMatches = Array.from(finalText.matchAll(imgRegex)) as RegExpMatchArray[];
+                
+                imgMatches.forEach(m => {
+                    const imgName = m[1].split('|')[0];
+                    const file = this.app.metadataCache.getFirstLinkpathDest(imgName, sourcePath);
+                    if (file) {
+                        const imgSrc = this.app.vault.getResourcePath(file);
+                        imgHtml += `<img src="${imgSrc}" style="max-width: 100%; border-radius: 4px; margin-top: 5px; display: block;" />`;
+                    }
+                });
+                
+                finalText = finalText.replace(imgRegex, '').trim(); 
+                const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
+                finalText = finalText.replace(linkRegex, '').trim();
+
+                const safeOriginal = encodeURIComponent(fullMatch);
+                
+                // Determinamos de qué lado va el borde según la dirección (> derecha, < izquierda)
+                const borderStyle = direction === '>' ? `border-left: 3px solid ${matchedColor};` : `border-right: 3px solid ${matchedColor};`;
+                
+                // Inyectamos el span guardando la direccionalidad (data-direction) y respetando la estructura del regex para restoreFromPrint
+                marginaliasToInject += `<span class="cornell-print-margin" data-original="${safeOriginal}" data-direction="${direction}" style="${borderStyle} color: ${matchedColor};">${finalText}${imgHtml}</span>`;
+                
+                // Removemos la marginalia original de su posición mid-sentence
+                cleanLine = cleanLine.replace(fullMatch, '').trim();
+                // Reiniciamos el índice del regex porque hemos mutado la cadena original
+                regex.lastIndex = 0; 
+            }
+
+            // Si extrajimos marginalias, las inyectamos justo antes del texto limpio
+            return marginaliasToInject.length > 0 ? marginaliasToInject + " " + cleanLine : line;
         });
+
+        const newContent = newLines.join('\n');
 
         if (modified) {
             editor.setValue(newContent);

@@ -265,37 +265,53 @@ body.cornell-active-recall-on .cornell-flashcard-target:hover img:not(.cm-cornel
    ====================================================== */
 
 @media print {
-    /* 1. La "Caja Fuerte" (El Párrafo) */
-    p:has(.cornell-print-margin),
-    li:has(.cornell-print-margin),
-    blockquote:has(.cornell-print-margin) {
+    /* 1. La "Caja Fuerte" (El Párrafo) - Direccionalidad Izquierda */
+    p:has(.cornell-print-margin[data-direction="<"]),
+    li:has(.cornell-print-margin[data-direction="<"]),
+    blockquote:has(.cornell-print-margin[data-direction="<"]) {
         position: relative !important;
-        /* Empujamos el texto principal a la derecha para crear la columna Cornell */
         padding-left: 28% !important; 
         page-break-inside: avoid !important;
         break-inside: avoid !important;
-        
-        /* 🛡️ LA VACUNA ANTI-DESBORDAMIENTO: 
-           Obliga al párrafo a crecer a lo alto para contener notas marginales muy largas */
         display: flow-root !important; 
     }
 
-    /* 2. La Marginalia salta a la columna vacía usando floats */
+    /* 1b. La "Caja Fuerte" (El Párrafo) - Direccionalidad Derecha */
+    p:has(.cornell-print-margin[data-direction=">"]),
+    li:has(.cornell-print-margin[data-direction=">"]),
+    blockquote:has(.cornell-print-margin[data-direction=">"]) {
+        position: relative !important;
+        padding-right: 28% !important; 
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+        display: flow-root !important; 
+    }
+
+    /* 2. Clase base de Marginalia */
     .cornell-print-margin {
-        float: left !important;
-        clear: left !important; /* Evita que las notas del mismo párrafo choquen */
-        
-        /* Tiramos la nota hacia el espacio vacío generado por el padding del padre */
-        margin-left: -38% !important; 
         width: 35% !important;
-        
         display: block !important;
-        text-align: right !important;
-        padding-right: 10px !important;
-        
         background-color: transparent !important;
         font-size: 9.5pt !important;
         line-height: 1.2 !important;
+    }
+
+    /* 2a. Flotante a la Izquierda (%%<) */
+    .cornell-print-margin[data-direction="<"] {
+        float: left !important;
+        clear: left !important;
+        margin-left: -38% !important; 
+        text-align: right !important;
+        padding-right: 10px !important;
+    }
+
+    /* 2b. Flotante a la Derecha (%%>) */
+    .cornell-print-margin[data-direction=">"] {
+        float: right !important;
+        clear: right !important;
+        margin-right: -38% !important; 
+        text-align: left !important;
+        padding-left: 10px !important;
     }
 
     /* 3. Seguro anti-blur */

@@ -7,6 +7,7 @@ import { GamificationAddon } from "./addons/GamificationAddon";
 import { CustomBackgroundAddon } from "./addons/CustomBackgroundAddon";
 import { RhizomeAddon, RHIZOME_VIEW_TYPE } from "./addons/RhizomeAddon";
 import { PdfDoodleAddon } from "./addons/PdfDoodleAddon";
+import { SuperDoodleAddon } from "./addons/super-doodle";
 
 
 // =================================================================
@@ -250,7 +251,8 @@ const DEFAULT_SETTINGS: CornellSettings = {
     addons: {
         "gamification-profile": false, // Por defecto viene apagado
         "custom-background": false,
-        "rhizome-time-machine": false
+        "rhizome-time-machine": false,
+        "super-doodle": false // 🎨
     },
     userStats: {
         xp: 0,
@@ -1244,7 +1246,7 @@ class SidebarDoodleModal extends Modal {
     }
 }
 // --- VISTA LATERAL (EXPLORER) ESTÉTICA MINIMALISTA Y BLINDADA ●🧠 ---
-class CornellNotesView extends ItemView {
+export class CornellNotesView extends ItemView {
     plugin: CornellMarginalia;
     currentTab: 'current' | 'vault' | 'threads' | 'pinboard' = 'current';
     // 🧠 Memoria para el Cosido por Teclado
@@ -3900,10 +3902,32 @@ class CornellSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                     new Notice("Reinicia Obsidian para aplicar cambios en los Addons.");
             }));
-    
-    }
 
+            new Setting(containerEl)
+            .setName(this.plugin.superDoodleAddon.name)
+            .setDesc(this.plugin.superDoodleAddon.description)
+            .addToggle(toggle => toggle
+                // Leemos el valor actual (si no existe, por defecto es false)
+                .setValue(this.plugin.settings.addons[this.plugin.superDoodleAddon.id] || false)
+                .onChange(async (value) => {
+                    // 1. Guardamos el nuevo estado en la configuración
+                    this.plugin.settings.addons[this.plugin.superDoodleAddon.id] = value;
+                    await this.plugin.saveSettings();
+
+                    // 2. Ejecutamos el parcheo en tiempo real
+                    if (value) {
+                        this.plugin.superDoodleAddon.load();
+                        new Notice(`✅ ${this.plugin.superDoodleAddon.name} activado`);
+                    } else {
+                        this.plugin.superDoodleAddon.unload();
+                        new Notice(`❌ ${this.plugin.superDoodleAddon.name} desactivado`);
+                    }
+                })
+            );
+    }
 }
+
+
 
 // --- 🕰️ LIENZO DE LA MÁQUINA DEL TIEMPO (RHIZOME) ---
 // ... (Tus importaciones y settings arriba quedan igual)
@@ -4808,7 +4832,8 @@ export default class CornellMarginalia extends Plugin {
     gamificationAddon!: GamificationAddon;
     backgroundAddon!: CustomBackgroundAddon;
     rhizomeAddon!: RhizomeAddon;
-
+    // SUPER DOODLEEEEEEEEEEEEEEEEEEE
+    public superDoodleAddon!: SuperDoodleAddon;
    
     // 📁 MOTOR DE CREACIÓN DE CARPETAS
     async ensureFolderExists(folderPath: string) {
@@ -4841,6 +4866,12 @@ export default class CornellMarginalia extends Plugin {
         this.backgroundAddon = new CustomBackgroundAddon(this);
         if (this.settings.addons && this.settings.addons["custom-background"]) {
             this.backgroundAddon.load();
+        }
+
+        // superdoodleee 
+        this.superDoodleAddon = new SuperDoodleAddon(this);
+        if (this.settings.addons[this.superDoodleAddon.id]) {
+            this.superDoodleAddon.load();
         }
 
         // maquina del tiempo rizomatica
@@ -5376,6 +5407,15 @@ this.registerEvent(
             });
         });
     }
+    
+    onunload() {
+        console.log("Descargando Cornell Marginalia...");
+        
+        // Si el SuperDoodle estaba encendido, lo apagamos para restaurar el lienzo normal
+        if (this.settings.addons && this.settings.addons["super-doodle"]) {
+            this.superDoodleAddon.unload();
+        }
+}
 
     toggleActiveRecall() {
         this.activeRecallMode = !this.activeRecallMode;

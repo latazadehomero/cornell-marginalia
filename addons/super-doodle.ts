@@ -132,7 +132,7 @@ export class SuperDoodleAddon extends CornellAddon {
                 }
             };
 
-            // 1. BOTÓN ATTACH (Va al Board)
+// 1. BOTÓN ATTACH (Va al Board)
             const attachBtn = rightGrp.createEl('button', { text: '📌 Attach to Board', title: 'Save and add to Pinboard' });
             attachBtn.onclick = async () => {
                 if (!view.zenCanvasEl) return;
@@ -179,7 +179,7 @@ export class SuperDoodleAddon extends CornellAddon {
                 view.applyFiltersAndRender();
             };
 
-            // 2. NUEVO BOTÓN OMNI-CAPTURE (Va al Inbox/Destino)
+            // 2. BOTÓN OMNI-CAPTURE (Va al Inbox/Destino)
             const zapBtn = rightGrp.createEl('button', { text: '⚡ Omni-Capture', cls: 'mod-cta', title: 'Save instantly to Omni-Capture Destination' });
             zapBtn.style.backgroundColor = 'var(--interactive-accent)';
             zapBtn.style.color = 'var(--text-on-accent)';
@@ -188,29 +188,24 @@ export class SuperDoodleAddon extends CornellAddon {
                 if (!view.zenCanvasEl) return;
                 zapBtn.innerText = '⏳ Saving...';
                 
-                // 1. Convertimos el lienzo a Binario
                 const dataUrl = view.zenCanvasEl.toDataURL("image/png");
                 const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
                 const arrayBuffer = base64ToArrayBuffer(base64Data);
 
-                // 2. Preparamos la carga para el Cerebro (OmniCaptureManager)
                 const payload = {
-                    thought: "", // En modo rápido desde el SuperDoodle solo enviamos la imagen
+                    thought: "",
                     destination: view.plugin.settings.lastOmniDestination || "Marginalia Inbox",
                     doodleData: arrayBuffer
                 };
 
                 try {
-                    // 3. Enviamos a guardar
                     await view.plugin.captureManager.saveCapture(payload);
                     
-                    // 4. Premiamos con XP si la gamificación está activa
                     if (view.plugin.settings.addons && view.plugin.settings.addons["gamification-profile"]) {
                         view.plugin.gamificationAddon.addXp();
                         view.renderUI(); 
                     }
 
-                    // 5. Limpiamos y volvemos a la vista normal
                     view.isZenMode = false;
                     if (view.zenCtx) view.zenCtx.clearRect(0, 0, view.zenCanvasEl.width, view.zenCanvasEl.height);
                     view.applyFiltersAndRender();
@@ -220,55 +215,6 @@ export class SuperDoodleAddon extends CornellAddon {
                     zapBtn.innerText = '⚡ Omni-Capture';
                     new Notice("Error guardando el Doodle. Revisa la consola.");
                 }
-            };
-            
-            const saveBtn = rightGrp.createEl('button', { text: '💾 Attach', cls: 'mod-cta', title: 'Save and add to Board' });
-            saveBtn.style.backgroundColor = 'var(--interactive-accent)';
-            saveBtn.style.color = 'var(--text-on-accent)';
-            
-            saveBtn.onclick = async () => {
-                if (!view.zenCanvasEl) return;
-                saveBtn.innerText = '⏳ Saving...';
-                
-                const dataUrl = view.zenCanvasEl.toDataURL("image/png");
-                const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
-                const arrayBuffer = base64ToArrayBuffer(base64Data);
-
-                // @ts-ignore
-                const dateStr = window.moment().format('YYYYMMDD_HHmmss');
-                const fileName = `superdoodle_${dateStr}.png`;
-                const folder = addonInstance.plugin.settings.doodleFolder.trim();
-                let attachmentPath = fileName;
-                
-                if (folder) {
-                    await addonInstance.plugin.ensureFolderExists(folder);
-                    attachmentPath = `${folder}/${fileName}`;
-                } else {
-                    try {
-                        // @ts-ignore
-                        attachmentPath = await view.app.fileManager.getAvailablePathForAttachment(fileName, "");
-                    } catch (e) { attachmentPath = fileName; }
-                }
-                
-                await view.app.vault.createBinary(attachmentPath, arrayBuffer);
-                const actualFileName = attachmentPath.split('/').pop();
-                
-                view.pinboardItems.push({ 
-                    text: `![[${actualFileName}]]`, 
-                    rawText: `![[${actualFileName}]]`, 
-                    color: 'transparent', 
-                    file: null as any, 
-                    line: -1, 
-                    blockId: null, 
-                    outgoingLinks: [], 
-                    isCustom: true, 
-                    indentLevel: 0
-                });
-                
-                new Notice('🎨 Super Doodle attached to Board!');
-                view.isZenMode = false;
-                if (view.zenCtx) view.zenCtx.clearRect(0, 0, view.zenCanvasEl.width, view.zenCanvasEl.height);
-                view.applyFiltersAndRender();
             };
 
             // Lógica de actualización de UI

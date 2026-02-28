@@ -265,23 +265,23 @@ body.cornell-active-recall-on .cornell-flashcard-target:hover img:not(.cm-cornel
    ====================================================== */
 
 @media print {
-    /* 1. La "Caja Fuerte" (El Párrafo) - Direccionalidad Izquierda */
-    p:has(.cornell-print-margin[data-direction="<"]),
-    li:has(.cornell-print-margin[data-direction="<"]),
-    blockquote:has(.cornell-print-margin[data-direction="<"]) {
+    /* 1. La "Caja Fuerte" (El Párrafo) - Direccionalidad Izquierda (%%>) */
+    p:has(.cornell-print-margin[data-direction=">"]),
+    li:has(.cornell-print-margin[data-direction=">"]),
+    blockquote:has(.cornell-print-margin[data-direction=">"]) {
         position: relative !important;
-        padding-left: 28% !important; 
+        padding-left: 28% !important; /* Deja espacio a la izquierda */
         page-break-inside: avoid !important;
         break-inside: avoid !important;
         display: flow-root !important; 
     }
 
-    /* 1b. La "Caja Fuerte" (El Párrafo) - Direccionalidad Derecha */
-    p:has(.cornell-print-margin[data-direction=">"]),
-    li:has(.cornell-print-margin[data-direction=">"]),
-    blockquote:has(.cornell-print-margin[data-direction=">"]) {
+    /* 1b. La "Caja Fuerte" (El Párrafo) - Direccionalidad Derecha (%%<) */
+    p:has(.cornell-print-margin[data-direction="<"]),
+    li:has(.cornell-print-margin[data-direction="<"]),
+    blockquote:has(.cornell-print-margin[data-direction="<"]) {
         position: relative !important;
-        padding-right: 28% !important; 
+        padding-right: 28% !important; /* Deja espacio a la derecha */
         page-break-inside: avoid !important;
         break-inside: avoid !important;
         display: flow-root !important; 
@@ -296,8 +296,8 @@ body.cornell-active-recall-on .cornell-flashcard-target:hover img:not(.cm-cornel
         line-height: 1.2 !important;
     }
 
-    /* 2a. Flotante a la Izquierda (%%<) */
-    .cornell-print-margin[data-direction="<"] {
+    /* 2a. Flotante a la Izquierda (%%>) */
+    .cornell-print-margin[data-direction=">"] {
         float: left !important;
         clear: left !important;
         margin-left: -38% !important; 
@@ -305,8 +305,8 @@ body.cornell-active-recall-on .cornell-flashcard-target:hover img:not(.cm-cornel
         padding-right: 10px !important;
     }
 
-    /* 2b. Flotante a la Derecha (%%>) */
-    .cornell-print-margin[data-direction=">"] {
+    /* 2b. Flotante a la Derecha (%%<) */
+    .cornell-print-margin[data-direction="<"] {
         float: right !important;
         clear: right !important;
         margin-right: -38% !important; 

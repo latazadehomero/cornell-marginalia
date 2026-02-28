@@ -4115,6 +4115,10 @@ export class RhizomeView extends ItemView {
     plugin: CornellMarginalia;
     isReviewMode: boolean = false; 
     isStitchingMode: boolean = false;
+    isMoleculeMode: boolean = false;
+    hideOrphans: boolean = false; // 👻 Controla si ocultamos las notas sin conexiones
+    is3DMode: boolean = false; // 🌌 Activa la perspectiva de mesa holográfica
+    focusedClusterId: string | null = null; // 🎯 Recuerda qué molécula estamos aislando
     sourceStitchItem: any = null;
 
     // 🔍 NUEVOS ESTADOS DE FILTRO Y CACHÉ
@@ -4185,7 +4189,6 @@ export class RhizomeView extends ItemView {
     renderTopBar() {
         this.topBarEl.empty();
         
-        // 1. Buscador Inteligente
         const searchWrapper = this.topBarEl.createDiv({ cls: 'cornell-search-wrapper' });
         const searchIconEl = searchWrapper.createSpan({ cls: 'cornell-search-icon' });
         setIcon(searchIconEl, 'search');
@@ -4197,7 +4200,6 @@ export class RhizomeView extends ItemView {
             this.renderTimeline(); 
         };
 
-        // 2. Filtro de Flashcards
         const flashcardBtn = this.topBarEl.createEl('button', { 
             title: 'Show only Flashcards (;;)', 
             cls: 'cornell-rhizome-filter-btn' + (this.showOnlyFlashcards ? ' is-active' : '')
@@ -4210,7 +4212,6 @@ export class RhizomeView extends ItemView {
             this.renderTimeline();
         };
 
-        // 3. Filtro de Colores (Píldoras)
         const pillsContainer = this.topBarEl.createDiv({ cls: 'cornell-color-pills' });
         this.plugin.settings.tags.forEach(tag => {
             const pill = pillsContainer.createEl('span', { cls: 'cornell-color-pill' });
@@ -4229,15 +4230,57 @@ export class RhizomeView extends ItemView {
             };
         });
 
-        // 4. Botón de Recarga Manual
+        // 🔬 MODO MOLÉCULA
+        const moleculeBtn = this.topBarEl.createEl('button', { 
+            title: 'Molecule View (Compass)', 
+            cls: 'cornell-rhizome-filter-btn' + (this.isMoleculeMode ? ' is-active' : '') 
+        });
+        setIcon(moleculeBtn, 'share-2'); 
+        moleculeBtn.createSpan({ text: 'Molecule' });
+
+        // 👻 FILTRO HUÉRFANAS
+        const orphanBtn = this.topBarEl.createEl('button', { 
+            title: 'Hide notes without compass links', 
+            cls: 'cornell-rhizome-filter-btn' + (this.hideOrphans ? ' is-active' : '') 
+        });
+        setIcon(orphanBtn, 'eye-off'); 
+        orphanBtn.createSpan({ text: 'Clean Orphans' });
+        orphanBtn.style.display = this.isMoleculeMode ? 'flex' : 'none';
+
+        // 🌌 MODO 3D (NUEVO)
+        const btn3D = this.topBarEl.createEl('button', { 
+            title: 'Toggle Holographic 3D View', 
+            cls: 'cornell-rhizome-filter-btn' + (this.is3DMode ? ' is-active' : '') 
+        });
+        setIcon(btn3D, 'box'); 
+        btn3D.createSpan({ text: '3D Space' });
+        btn3D.style.display = this.isMoleculeMode ? 'flex' : 'none';
+
+        moleculeBtn.onclick = () => {
+            this.isMoleculeMode = !this.isMoleculeMode;
+            moleculeBtn.classList.toggle('is-active', this.isMoleculeMode);
+            orphanBtn.style.display = this.isMoleculeMode ? 'flex' : 'none'; 
+            btn3D.style.display = this.isMoleculeMode ? 'flex' : 'none'; 
+            this.renderTimeline(); 
+        };
+
+        orphanBtn.onclick = () => {
+            this.hideOrphans = !this.hideOrphans;
+            orphanBtn.classList.toggle('is-active', this.hideOrphans);
+            this.renderTimeline(); 
+        };
+
+        btn3D.onclick = () => {
+            this.is3DMode = !this.is3DMode;
+            btn3D.classList.toggle('is-active', this.is3DMode);
+            this.renderTimeline(); 
+        };
+
         const refreshBtn = this.topBarEl.createEl('button', { title: 'Rescan Vault', cls: 'cornell-rhizome-filter-btn' });
         setIcon(refreshBtn, 'refresh-cw');
         refreshBtn.onclick = async () => {
-            const icon = refreshBtn.querySelector('svg');
-            if(icon) icon.classList.add('cornell-spin');
             await this.scanVault();
             this.renderTimeline();
-            if(icon) icon.classList.remove('cornell-spin');
             new Notice("Timeline rescanned!");
         };
     }
@@ -4289,14 +4332,25 @@ export class RhizomeView extends ItemView {
                     while ((linkMatch = linkRegex.exec(rawText)) !== null) {
                         outgoingLinks.push(linkMatch[1]);
                     }
+                    // 🧭 EXTRAER ENLACES DE BRÚJULA (Blindado)
+                    const compassRegex = /\[(North|South|East|West)::\s*\[\[([\s\S]*?)\]\]\]/gi;
+                    const compassLinks = [];
+                    let compassMatch;
+                    while ((compassMatch = compassRegex.exec(rawText)) !== null) {
+                        compassLinks.push({ target: compassMatch[2].trim(), direction: compassMatch[1].toLowerCase() });
+                    }
+
+                    // 🧼 Limpiamos el texto para que la etiqueta [West:: ...] desaparezca de la tarjeta visual
+                    const cleanCardText = rawText.replace(compassRegex, '').trim();
 
                     const nodeData = {
-                        text: rawText,
+                        text: cleanCardText, // 👈 Pasamos el texto limpio
                         color: color,
                         file: file,
                         line: i,
                         blockId: blockId,
                         outgoingLinks: outgoingLinks,
+                        compassLinks: compassLinks,
                         id: blockId ? blockId : `${file.basename}-L${i}`,
                         isFlashcard: isFlashcard
                     };
@@ -4335,6 +4389,11 @@ export class RhizomeView extends ItemView {
     }
 
     renderTimeline(ignoredCanvas?: HTMLElement) {
+        // 🌌 ENRUTADOR: Si estamos en modo molécula, cargamos el lienzo espacial
+        if (this.isMoleculeMode) {
+            return this.renderMoleculeView();
+        }
+
         const canvas = this.canvasEl;
         canvas.empty();
 
@@ -4786,6 +4845,614 @@ export class RhizomeView extends ItemView {
 
         }, 300);
     }
+
+    // ======================================================
+    // 🌌 MOTOR DEL MODO MOLÉCULA (LIENZO ESPACIAL 3D)
+    // ======================================================
+    renderMoleculeView() {
+        const canvas = this.canvasEl;
+        canvas.empty();
+        
+        const scrollContainer = canvas.createDiv({ cls: 'cornell-rhizome-scroll' });
+        scrollContainer.style.overflow = 'auto'; 
+        
+        const container = scrollContainer.createDiv({ cls: 'cornell-molecule-canvas' });
+        container.style.position = 'relative';
+        container.style.width = '3000px'; 
+        container.style.height = '3000px';
+        // 🚀 FIX: Hace que el contenedor gigante no bloquee el ratón
+        container.style.pointerEvents = 'none';
+
+        // 🎥 CONTROL DE CÁMARA Y NAVEGACIÓN 3D (VERDADERA ÓRBITA)
+        let rotX = 55;
+        let rotY = -15; // 🚀 CAMBIO CLAVE: Eje Y en lugar de Z
+        let currentZoom = this.is3DMode ? 0.9 : 1;
+
+        const zoomControls = canvas.createDiv({ cls: 'cornell-rhizome-zoom-controls' });
+        zoomControls.style.zIndex = '1000'; 
+        const zoomOutBtn = zoomControls.createEl('button', { text: '-' });
+        const zoomResetBtn = zoomControls.createEl('button', { text: '100%' });
+        const zoomInBtn = zoomControls.createEl('button', { text: '+' });
+
+        const applyTransform = (smooth = true) => {
+            container.style.transition = smooth ? 'transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1)' : 'none';
+            if (this.is3DMode) {
+                // 🚀 Aplicamos rotateY para lograr la perspectiva de profundidad
+                container.style.transform = `perspective(2000px) rotateX(${rotX}deg) rotateY(${rotY}deg) scale(${currentZoom}) translateY(-100px)`;
+                container.style.transformStyle = 'preserve-3d';
+                container.style.boxShadow = 'inset 0 0 200px rgba(0,0,0,0.5)';
+            } else {
+                container.style.transform = `perspective(2000px) rotateX(0deg) rotateY(0deg) scale(${currentZoom}) translateY(0px)`;
+                container.style.boxShadow = 'none';
+            }
+        };
+
+        zoomInBtn.onclick = () => { currentZoom = Math.min(currentZoom + 0.2, 2.5); applyTransform(); zoomResetBtn.innerText = `${Math.round(currentZoom * 100)}%`; };
+        zoomOutBtn.onclick = () => { currentZoom = Math.max(currentZoom - 0.2, 0.2); applyTransform(); zoomResetBtn.innerText = `${Math.round(currentZoom * 100)}%`; };
+        zoomResetBtn.onclick = () => { currentZoom = this.is3DMode ? 0.9 : 1; rotX = 55; rotY = -15; applyTransform(); zoomResetBtn.innerText = '100%'; };
+
+        scrollContainer.addEventListener('wheel', (e) => {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                if (e.deltaY < 0) currentZoom = Math.min(currentZoom + 0.1, 2.5);
+                else currentZoom = Math.max(currentZoom - 0.1, 0.2);
+                applyTransform();
+                zoomResetBtn.innerText = `${Math.round(currentZoom * 100)}%`;
+            }
+        });
+
+        // --- 2. 🛸 NAVEGACIÓN ORBITAL (ROTACIÓN LIBRE) ---
+        scrollContainer.addEventListener('mousedown', (e: MouseEvent) => {
+            if (!this.is3DMode) return;
+            if ((e.target as HTMLElement).closest('.cornell-rhizome-node, .cornell-action-btn, button, a')) return;
+
+            let startX = e.clientX;
+            let startY = e.clientY;
+            let startRotX = rotX;
+            let startRotY = rotY; // 🚀 Guardamos el eje Y
+            
+            scrollContainer.style.cursor = 'grabbing';
+
+            const onMouseMove = (moveEvent: MouseEvent) => {
+                const dx = moveEvent.clientX - startX;
+                const dy = moveEvent.clientY - startY;
+
+                // 🚀 Eje X del ratón mueve la cámara ALREDEDOR (Órbita Y)
+                rotY = startRotY + (dx * 0.4); 
+                // Eje Y del ratón inclina la cámara ARRIBA/ABAJO (Órbita X)
+                rotX = Math.max(0, Math.min(startRotX - (dy * 0.4), 85)); 
+
+                applyTransform(false); 
+            };
+
+            const onMouseUp = () => {
+                scrollContainer.style.cursor = 'auto';
+                applyTransform(true); 
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+            };
+
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        });
+
+        applyTransform();
+
+        // 🕸️ INYECTAR CAPA DE LÍNEAS 3D (REEMPLAZA AL SVG PLANO)
+        const linesContainer = container.createDiv({ cls: 'cornell-3d-lines-container' });
+        linesContainer.style.position = 'absolute';
+        linesContainer.style.top = '0';
+        linesContainer.style.left = '0';
+        linesContainer.style.width = '100%';
+        linesContainer.style.height = '100%';
+        linesContainer.style.pointerEvents = 'none'; // Transparente al ratón
+        linesContainer.style.transformStyle = 'preserve-3d'; // VITAL: Permite que las líneas existan en la profundidad
+        linesContainer.style.zIndex = '0';
+
+        // 🎯 BANNER DE MODO FOCO (Si está activo)
+        if (this.focusedClusterId) {
+            const focusBanner = scrollContainer.createDiv({ cls: 'cornell-focus-banner' });
+            focusBanner.style.position = 'fixed';
+            focusBanner.style.top = '20px';
+            focusBanner.style.left = '50%';
+            focusBanner.style.transform = 'translateX(-50%)';
+            focusBanner.style.zIndex = '1000';
+            focusBanner.style.background = 'var(--interactive-accent)';
+            focusBanner.style.color = 'var(--text-on-accent)';
+            focusBanner.style.padding = '10px 20px';
+            focusBanner.style.borderRadius = '20px';
+            focusBanner.style.boxShadow = '0 5px 15px rgba(0,0,0,0.3)';
+            focusBanner.style.display = 'flex';
+            focusBanner.style.gap = '10px';
+            focusBanner.style.alignItems = 'center';
+
+            focusBanner.innerHTML = `<span>🎯 Focused on Isolated Molecule</span>`;
+            const exitFocusBtn = focusBanner.createEl('button', { text: '✖ Exit Focus' });
+            exitFocusBtn.style.background = 'transparent';
+            exitFocusBtn.style.border = '1px solid white';
+            exitFocusBtn.style.color = 'white';
+            exitFocusBtn.style.cursor = 'pointer';
+            exitFocusBtn.style.borderRadius = '4px';
+            
+            exitFocusBtn.onclick = () => {
+                this.focusedClusterId = null;
+                this.renderTimeline();
+            };
+        }
+
+        // 🧠 ALGORITMO RASTREADOR DE CLÚSTER (BFS Bidireccional)
+        const clusterIds = new Set<string>();
+        if (this.focusedClusterId) {
+            const queue = [this.focusedClusterId];
+            clusterIds.add(this.focusedClusterId);
+            
+            // Mapeamos todas las conexiones del universo
+            const network = new Map<string, string[]>();
+            this.allCachedNodes.forEach(n => {
+                if (!network.has(n.id)) network.set(n.id, []);
+                if (n.compassLinks) {
+                    n.compassLinks.forEach((l: any) => {
+                        const rawT = l.target.split('|')[0].trim().replace('[[', '').replace(']]', '');
+                        const match = rawT.match(/#\^([a-zA-Z0-9]+)/);
+                        let tId = match ? match[1] : null;
+                        if (!tId) {
+                            const tNode = this.allCachedNodes.find(xn => xn.file.basename === rawT || xn.text.includes(rawT));
+                            if (tNode) tId = tNode.id;
+                        }
+                        if (tId) {
+                            if (!network.has(tId)) network.set(tId, []);
+                            network.get(n.id)!.push(tId);
+                            network.get(tId)!.push(n.id); // Conexión bidireccional
+                        }
+                    });
+                }
+            });
+
+            // Propagación viral para encontrar a toda la familia
+            let head = 0;
+            while (head < queue.length) {
+                const current = queue[head++];
+                const neighbors = network.get(current) || [];
+                neighbors.forEach(nx => {
+                    if (!clusterIds.has(nx)) {
+                        clusterIds.add(nx);
+                        queue.push(nx);
+                    }
+                });
+            }
+        }
+
+        // 🔍 0. APLICAR FILTROS (Búsqueda, Color, Huérfanas y FOCO)
+        const searchLower = this.searchQuery.toLowerCase();
+        const activeColors = this.activeColorFilters;
+        
+        const connectedIds = new Set<string>();
+        if (this.hideOrphans) {
+            // ... (El código que ya tienes de hideOrphans queda intacto aquí adentro)
+            this.allCachedNodes.forEach(node => {
+                if (node.compassLinks && node.compassLinks.length > 0) {
+                    connectedIds.add(node.id); 
+                    node.compassLinks.forEach((link: any) => {
+                        const rawTarget = link.target.split('|')[0].trim().replace('[[', '').replace(']]', '');
+                        const targetIdMatch = rawTarget.match(/#\^([a-zA-Z0-9]+)/);
+                        if (targetIdMatch) {
+                            connectedIds.add(targetIdMatch[1]); 
+                        } else {
+                            const targetNode = this.allCachedNodes.find(n => n.file.basename === rawTarget || n.text.includes(rawTarget));
+                            if (targetNode) connectedIds.add(targetNode.id); 
+                        }
+                    });
+                }
+            });
+        }
+
+        const validNodes = this.allCachedNodes.filter(item => {
+            const matchesSearch = item.text.toLowerCase().includes(searchLower) || item.file.basename.toLowerCase().includes(searchLower);
+            const matchesColor = activeColors.size === 0 || activeColors.has(item.color);
+            const matchesOrphan = !this.hideOrphans || connectedIds.has(item.id) || connectedIds.has(item.blockId);
+            // 🎯 NUEVO FILTRO: Si hay un foco activo, DEBE pertenecer a esa familia
+            const matchesCluster = !this.focusedClusterId || clusterIds.has(item.id);
+            
+            return matchesSearch && matchesColor && matchesOrphan && matchesCluster;
+        });
+
+        
+        // 🚀 AHORA EL MAPA MEMORIZA LAS 3 DIMENSIONES (X, Y, Z)
+        const positions = new Map<string, {x: number, y: number, z: number, rx: number, ry: number}>();
+        const centerX = 1500; const centerY = 1500; 
+        const spacing = 350; 
+        
+        // 1. FÍSICA Y COORDENADAS ESPACIALES
+        validNodes.forEach((node, idx) => {
+            if (!positions.has(node.id)) {
+                // Asignamos una Z inicial "aleatoria" para que nazcan en distintas alturas si estamos en 3D
+                const initZ = this.is3DMode ? ((node.text.length % 200) - 100) : 0;
+                positions.set(node.id, { x: centerX + (idx * 50), y: centerY + (idx * 50), z: initZ, rx: 0, ry: 0 });
+            }
+            
+            if (node.compassLinks && node.compassLinks.length > 0) {
+                node.compassLinks.forEach((link: any) => {
+                    const rawTarget = link.target.split('|')[0].trim().replace('[[', '').replace(']]', '');
+                    const targetIdMatch = rawTarget.match(/#\^([a-zA-Z0-9]+)/);
+                    let targetNode = null;
+                    
+                    if (targetIdMatch) {
+                        const tId = targetIdMatch[1];
+                        targetNode = validNodes.find(n => n.id === tId || n.blockId === tId);
+                    } else {
+                        targetNode = validNodes.find(n => n.file.basename === rawTarget || n.text.includes(rawTarget));
+                    }
+
+                    if (targetNode) {
+                        const basePos = positions.get(node.id)!;
+                        let dx = 0; let dy = 0;
+                        if (link.direction === 'north') dy = -spacing;
+                        if (link.direction === 'south') dy = spacing;
+                        if (link.direction === 'east') dx = spacing;
+                        if (link.direction === 'west') dx = -spacing;
+                        
+                        // Forzamos la nueva posición X e Y, y le heredamos la profundidad Z de su padre
+                        positions.set(targetNode.id, { x: basePos.x + dx, y: basePos.y + dy, z: basePos.z, rx: 0, ry: 0 });
+                    }
+                });
+            }
+        });
+
+        // 2. RENDERIZADO DE NODOS
+        validNodes.forEach(item => {
+            const pos = positions.get(item.id);
+            if (!pos) return;
+
+            const node = container.createDiv({ cls: 'cornell-rhizome-node is-molecule-node' });
+            node.id = item.id;
+            node.style.position = 'absolute';
+            node.style.left = `${pos.x}px`;
+            node.style.top = `${pos.y}px`;
+            node.style.width = '240px';
+            node.style.borderColor = item.color;
+            node.style.boxShadow = `0 4px 15px ${item.color}20`;
+            node.style.zIndex = '1';
+            // 🚀 FIX: Le devuelve la fisicalidad a la tarjeta para que detecte el click y hover
+            node.style.pointerEvents = 'auto';
+           
+
+            // 🚀 LEER LA PROFUNDIDAD Z EXACTA DESDE EL MAPA
+         if (this.is3DMode) {
+             node.style.transform = `translateZ(${pos.z}px) rotateX(${pos.rx || 0}deg) rotateY(${pos.ry || 0}deg)`;
+                const shadowSpread = Math.max(10, 30 + (pos.z * 0.2));
+                node.style.boxShadow = `0 ${shadowSpread}px ${shadowSpread + 10}px ${item.color}40`;
+            } else {
+                node.style.transform = 'translateZ(0px)';
+            }
+
+            // --- 🖼️ MAGIA DE IMÁGENES ---
+            let cleanText = item.text.replace(/^[!?XV-]+\s*/, '');
+            const imagesToRender: string[] = [];
+            const imgRegex = /img:\s*\[\[(.*?)\]\]/gi;
+            const imgMatches = Array.from(cleanText.matchAll(imgRegex)) as RegExpMatchArray[];
+            imgMatches.forEach(m => imagesToRender.push(m[1]));
+            cleanText = cleanText.replace(imgRegex, '').trim();
+            const threadRegex = /(?<!!)\[\[(.*?)\]\]/g;
+            cleanText = cleanText.replace(threadRegex, '').trim();
+
+            if (cleanText) {
+                node.createEl("span", { text: cleanText.length > 130 ? cleanText.substring(0, 130) + "..." : cleanText });
+            }
+
+            if (imagesToRender.length > 0) {
+                const imgContainer = node.createDiv({ cls: 'cornell-rhizome-images' });
+                imagesToRender.forEach(imgName => {
+                    const cleanName = imgName.split('|')[0];
+                    const file = this.plugin.app.metadataCache.getFirstLinkpathDest(cleanName, item.file.path);
+                    if (file) {
+                        const imgSrc = this.plugin.app.vault.getResourcePath(file);
+                        const imgEl = imgContainer.createEl('img', { attr: { src: imgSrc, draggable: 'false' } });
+                        imgEl.style.maxHeight = '120px';
+                        imgEl.style.maxWidth = '100%';
+                        imgEl.style.objectFit = 'contain';
+                        imgEl.style.borderRadius = '4px';
+                        imgEl.style.marginTop = '8px';
+                        imgEl.style.display = 'block';
+                    }
+                });
+            } // 🛡️ AQUÍ CERRAMOS EL BLOQUE DE IMÁGENES PARA NO ATRAPAR LOS BOTONES
+
+            // --- 🛠️ BOTONERA UNIFICADA DE ACCIONES ---
+            // Aquí viven Focus, Stitch y Zoom ordenados horizontalmente
+            const actionsDiv = node.createDiv({ cls: 'cornell-rhizome-actions' });
+            actionsDiv.style.position = 'absolute';
+            actionsDiv.style.bottom = '8px';
+            actionsDiv.style.right = '8px';
+            actionsDiv.style.display = 'flex';
+            actionsDiv.style.gap = '6px'; // Separación perfecta entre los botones
+            actionsDiv.style.zIndex = '10';
+
+            // 1. Botón de Focus (Clúster Molecular) -> Presente en TODAS
+            const focusBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
+            setIcon(focusBtn, 'focus');
+            focusBtn.title = "Isolate Molecule Cluster";
+            focusBtn.style.background = 'var(--background-modifier-border)';
+            focusBtn.style.padding = '4px';
+            focusBtn.style.borderRadius = '4px';
+            focusBtn.style.cursor = 'pointer';
+
+            focusBtn.onClickEvent((ev) => {
+                ev.stopPropagation(); 
+                this.focusedClusterId = item.id;
+                this.renderTimeline(); 
+            });
+
+            // 2. Botón de Cosido (Stitch) -> Presente en TODAS
+            const stitchBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
+            setIcon(stitchBtn, 'link');
+            stitchBtn.title = "Stitch (Connect) to another note";
+            stitchBtn.style.background = 'var(--background-modifier-border)';
+            stitchBtn.style.padding = '4px';
+            stitchBtn.style.borderRadius = '4px';
+            stitchBtn.style.cursor = 'pointer';
+
+            stitchBtn.onClickEvent((ev) => {
+                ev.stopPropagation(); 
+                this.handleStitchClick(item, node, canvas);
+            });
+
+            // 3. Botón de Zoom (Fullscreen) -> Presente SOLO si hay imágenes
+            if (imagesToRender.length > 0) {
+                const zoomBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
+                setIcon(zoomBtn, 'maximize');
+                zoomBtn.title = "View Doodle in Fullscreen";
+                zoomBtn.style.background = 'var(--background-modifier-border)';
+                zoomBtn.style.padding = '4px';
+                zoomBtn.style.borderRadius = '4px';
+                zoomBtn.style.cursor = 'pointer';
+
+                zoomBtn.onClickEvent((ev) => {
+                    ev.stopPropagation(); 
+                    
+                    const firstImg = imagesToRender[0];
+                    const cleanName = firstImg.split('|')[0];
+                    const file = this.plugin.app.metadataCache.getFirstLinkpathDest(cleanName, item.file.path);
+                    
+                    if (file) {
+                        const imgSrc = this.plugin.app.vault.getResourcePath(file);
+                        const overlay = document.body.createDiv({ cls: 'cornell-lightbox-overlay' });
+                        overlay.style.position = 'fixed';
+                        overlay.style.top = '0'; overlay.style.left = '0';
+                        overlay.style.width = '100vw'; overlay.style.height = '100vh';
+                        overlay.style.backgroundColor = 'rgba(0,0,0,0.85)';
+                        overlay.style.zIndex = '999999';
+                        overlay.style.display = 'flex';
+                        overlay.style.justifyContent = 'center';
+                        overlay.style.alignItems = 'center';
+
+                        const bigImg = overlay.createEl('img', { attr: { src: imgSrc } });
+                        bigImg.style.backgroundColor = 'white'; 
+                        bigImg.style.padding = '10px'; 
+                        bigImg.style.borderRadius = '8px'; 
+                        bigImg.style.maxHeight = '90vh';
+                        bigImg.style.maxWidth = '90vw';
+
+                        if (document.body.classList.contains('theme-dark') && cleanName.includes('doodle_')) {
+                            bigImg.style.filter = 'invert(1)';
+                            bigImg.style.opacity = '0.9';
+                        }
+
+                        overlay.onclick = () => overlay.remove();
+                        const escListener = (evKey: KeyboardEvent) => {
+                            if (evKey.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escListener); }
+                        };
+                        document.addEventListener('keydown', escListener);
+                    }
+                });
+            }
+            
+
+            // --- 🕹️ CONTROL CENTRAL DE EVENTOS (CLIC VS DRAG) ---
+            let wasDragged = false;
+
+            // 1. EL CLIC (Protegido)
+            node.addEventListener('click', (e: MouseEvent) => {
+                // Si el árbitro dice que arrastramos, bloqueamos la apertura de la nota
+                if (wasDragged) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return; 
+                }
+
+                if(this.isStitchingMode) {
+                    this.handleStitchClick(item, node, canvas);
+                } else {
+                    this.plugin.app.workspace.getLeaf(false).openFile(item.file, { eState: { line: item.line } });
+                }
+            });
+
+            // --- 👁️ MAGIA HOVER TOOLTIP ---
+            let hoverTimeout: NodeJS.Timeout | null = null;
+            let tooltipEl: HTMLElement | null = null;
+            let isHovering = false; 
+
+            const removeTooltip = () => {
+                isHovering = false; 
+                if (hoverTimeout) clearTimeout(hoverTimeout);
+                if (tooltipEl) { tooltipEl.remove(); tooltipEl = null; }
+                document.querySelectorAll('.cornell-hover-tooltip').forEach(el => el.remove());
+            };
+
+            node.addEventListener('mouseenter', (e: MouseEvent) => {
+                if (wasDragged) return; // No mostrar tooltip si estamos arrastrando a toda velocidad
+                isHovering = true;
+                hoverTimeout = setTimeout(async () => {
+                    if (!isHovering) return; 
+                    const content = await this.plugin.app.vault.cachedRead(item.file);
+                    if (!isHovering || !document.body.contains(node)) return;
+
+                    const lines = content.split('\n');
+                    const startLine = Math.max(0, item.line - 1);
+                    const endLine = Math.min(lines.length - 1, item.line + 1);
+                    
+                    removeTooltip(); 
+
+                    let rawBlock = '';
+                    for (let i = startLine; i <= endLine; i++) {
+                        let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                        if (cleanLine) {
+                            if (i === item.line) rawBlock += `==${cleanLine}==\n`; 
+                            else rawBlock += `${cleanLine}\n`;
+                        }
+                    }
+
+                    tooltipEl = document.createElement('div');
+                    tooltipEl.className = 'popover hover-popover cornell-hover-tooltip markdown-rendered markdown-preview-view'; 
+                    tooltipEl.style.position = 'fixed'; 
+                    tooltipEl.style.zIndex = '99999';
+                    tooltipEl.style.width = '450px'; 
+                    tooltipEl.style.maxHeight = '350px'; 
+                    tooltipEl.style.overflowY = 'auto'; 
+                    tooltipEl.style.backgroundColor = 'var(--background-primary)';
+                    tooltipEl.style.border = '1px solid var(--background-modifier-border)';
+                    tooltipEl.style.boxShadow = '0 10px 20px rgba(0,0,0,0.3)';
+                    tooltipEl.style.borderRadius = '8px';
+                    tooltipEl.style.padding = '12px';
+                    tooltipEl.style.display = 'flex'; 
+                    tooltipEl.style.flexDirection = 'column'; 
+                    tooltipEl.style.gap = '8px'; 
+
+                    const header = tooltipEl.createDiv({ cls: 'cornell-hover-context' });
+                    header.innerHTML = `<span style="font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;">📄 ${item.file.basename} (L${item.line + 1})</span>`;
+                    
+                    const body = tooltipEl.createDiv();
+                    body.style.width = '100%'; 
+
+                    document.body.appendChild(tooltipEl);
+
+                    const rect = node.getBoundingClientRect();
+                    let leftPos = rect.right + 20; 
+                    if (leftPos + 450 > window.innerWidth) leftPos = rect.left - 470; 
+                    if (leftPos < 10) leftPos = 10;
+                    tooltipEl.style.left = `${leftPos}px`;
+                    
+                    let topPos = rect.top;
+                    if (topPos + 350 > window.innerHeight) topPos = window.innerHeight - 360;
+                    tooltipEl.style.top = `${Math.max(10, topPos)}px`;
+
+                    const inlineImgRegex = /!\[\[(.*?\.(?:png|jpg|jpeg|gif|bmp|svg))\|?(.*?)\]\]/gi;
+                    rawBlock = rawBlock.replace(inlineImgRegex, (match, filename) => {
+                        const file = this.plugin.app.metadataCache.getFirstLinkpathDest(filename.trim(), item.file.path);
+                        if (file) {
+                            const resourcePath = this.plugin.app.vault.getResourcePath(file);
+                            return `<img src="${resourcePath}" style="max-height:220px; max-width:100%; border-radius:6px; display:block; margin:8px auto;">`;
+                        }
+                        return match; 
+                    });
+
+                    if (!rawBlock.trim()) rawBlock = "*No text context available.*";
+                    
+                    // @ts-ignore
+                    await MarkdownRenderer.renderMarkdown(rawBlock, body, item.file.path, this);
+
+                    requestAnimationFrame(() => {
+                        if (tooltipEl) tooltipEl.addClass('is-visible');
+                    });
+                }, 500); 
+            }); 
+
+            node.addEventListener('mouseleave', removeTooltip);
+
+            // 2. EL ARRASTRE ESPACIAL (Drag & Drop)
+            node.style.cursor = 'grab';
+            
+            node.addEventListener('mousedown', (e: MouseEvent) => {
+                const target = e.target as HTMLElement;
+                if (target.closest('button, a')) return;
+                
+                wasDragged = false; // Reiniciamos el árbitro al tocar la tarjeta
+                let startX = e.clientX;
+                let startY = e.clientY;
+                let initialLeft = parseInt(node.style.left, 10) || 0;
+                let initialTop = parseInt(node.style.top, 10) || 0;
+                
+                node.style.zIndex = '100'; 
+                node.style.cursor = 'grabbing';
+                node.style.transition = 'none'; 
+                removeTooltip(); // Ocultamos el tooltip si empezamos a mover
+                
+                // Rescatamos la Z inicial al hacer clic
+                let initialZ = positions.get(item.id)?.z || 0; 
+                let initialRx = positions.get(item.id)?.rx || 0;
+                let initialRy = positions.get(item.id)?.ry || 0;
+                
+                const onMouseMove = (moveEvent: MouseEvent) => {
+                    const dx = moveEvent.clientX - startX;
+                    const dy = moveEvent.clientY - startY;
+                    
+                    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+                        wasDragged = true;
+                    }
+
+                   if (moveEvent.shiftKey && this.is3DMode) {
+                     // 🛸 MODO PROFUNDIDAD (EJE Z)
+                     const newZ = initialZ - (dy * 1.5); 
+                     node.style.transform = `translateZ(${newZ}px) rotateX(${initialRx}deg) rotateY(${initialRy}deg)`;
+                     const shadowSpread = Math.max(10, 30 + (newZ * 0.2));
+                     node.style.boxShadow = `0 ${shadowSpread}px ${shadowSpread + 10}px ${item.color}40`;
+                     positions.set(item.id, { x: initialLeft, y: initialTop, z: newZ, rx: initialRx, ry: initialRy });
+
+                 } else if (moveEvent.altKey && this.is3DMode) {
+                     // 🌀 MODO ROTACIÓN (EJE X e Y de la tarjeta)
+                     const newRx = initialRx - (dy * 0.5);
+                     const newRy = initialRy + (dx * 0.5);
+                     node.style.transform = `translateZ(${initialZ}px) rotateX(${newRx}deg) rotateY(${newRy}deg)`;
+                     positions.set(item.id, { x: initialLeft, y: initialTop, z: initialZ, rx: newRx, ry: newRy });
+
+                 } else {
+                     // 🪐 FÍSICA RELATIVISTA CORREGIDA (Ejes Desacoplados)
+                        const radY = rotY * (Math.PI / 180);
+                        const radX = rotX * (Math.PI / 180);
+                        
+                        // Evitamos dividir por cero si la mesa se pone a 90 grados
+                        const cosY = Math.abs(Math.cos(radY)) < 0.1 ? 0.1 * Math.sign(Math.cos(radY)) : Math.cos(radY);
+                        const cosX = Math.abs(Math.cos(radX)) < 0.1 ? 0.1 * Math.sign(Math.cos(radX)) : Math.cos(radX);
+
+                        // La magia: Dividimos por el coseno para anular la compresión de la perspectiva
+                        const localDx = (dx / currentZoom) / cosY;
+                        const localDy = (dy / currentZoom) / cosX;
+
+                        const newX = initialLeft + localDx;
+                        const newY = initialTop + localDy;
+                        
+                        node.style.left = `${newX}px`;
+                        node.style.top = `${newY}px`;
+                        
+                        positions.set(item.id, { x: newX, y: newY, z: initialZ, rx: initialRx, ry: initialRy });
+                    }
+                    
+                    // 🕸️ Actualizamos usando el nuevo contenedor
+                    this.redrawMoleculeLines(validNodes, positions, linesContainer);
+                };
+
+                const onMouseUp = () => {
+                    node.style.zIndex = '1';
+                    node.style.cursor = 'grab';
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                    
+                    // Le damos 50 milisegundos al sistema para procesar el clic antes de bajar la bandera
+                    setTimeout(() => { wasDragged = false; }, 50);
+                };
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+        });
+
+        // 3. DIBUJADO VECTORIAL INICIAL (Primera pasada)
+        this.redrawMoleculeLines(validNodes, positions, linesContainer);
+        
+        setTimeout(() => {
+            scrollContainer.scrollLeft = 1000;
+            scrollContainer.scrollTop = 1000;
+        }, 100);
+    }
     // 🎯 MOTOR DEL MODO FOCO SEMÁNTICO
     activateFocusMode(centerNodeId: string, allNodes: any[], domNodesMap: Map<string, HTMLElement>, canvas: HTMLElement) {
         const allDomNodes = document.querySelectorAll('.cornell-rhizome-node');
@@ -4945,17 +5612,36 @@ export class RhizomeView extends ItemView {
             
             new Notice("Step 1: Origin selected. Click the Link icon on the destination note.");
         } else {
-            // FASE 2: Seleccionamos el Destino y disparamos
+            // FASE 2: Seleccionamos el Destino y preguntamos el tipo de vínculo
             if (this.sourceStitchItem.id === item.id) {
                 new Notice("Cannot connect a note to itself.");
                 this.cancelStitch(canvas);
                 return;
             }
             
-            this.executeStitch(this.sourceStitchItem, item).then(() => {
-                this.cancelStitch(canvas);
-                this.renderTimeline(canvas); // Recarga todo para dibujar el nuevo hilo láser
-            });
+            const banner = canvas.querySelector('.cornell-rhizome-stitch-banner');
+            if (banner) {
+                banner.empty();
+                banner.innerHTML = `<span>🧭 Select relationship from <b>${this.sourceStitchItem.file.basename}</b> to <b>${item.file.basename}</b>:</span>`;
+                
+                // Botones dinámicos de la brújula
+                const directions = ['Classic', 'North', 'South', 'East', 'West'];
+                directions.forEach(dir => {
+                    const btn = banner.createEl('button', { text: dir, cls: 'cornell-compass-btn' });
+                    btn.style.margin = "0 5px";
+                    btn.onclick = (e) => {
+                        e.stopPropagation();
+                        this.executeStitch(this.sourceStitchItem, item, dir).then(() => {
+                            this.cancelStitch(canvas);
+                            this.renderTimeline(canvas); 
+                        });
+                    };
+                });
+                
+                const cancelBtn = banner.createEl('button', { text: 'Cancel', cls: 'cornell-stitch-cancel' });
+                cancelBtn.style.marginLeft = "15px";
+                cancelBtn.onclick = (e) => { e.stopPropagation(); this.cancelStitch(canvas); };
+            }
         }
     }
 
@@ -4967,8 +5653,8 @@ export class RhizomeView extends ItemView {
         if (banner) banner.remove();
     }
 
-    async executeStitch(source: any, target: any) {
-        new Notice(`Stitching thread through time... ⏳⛓︎`);
+    async executeStitch(source: any, target: any, direction: string = 'Classic') {
+        new Notice(`Stitching semantic ${direction} thread... ⏳⛓︎`);
 
         // 1. Aseguramos que el destino tenga un ID (matrícula)
         let targetId = target.blockId;
@@ -4985,8 +5671,13 @@ export class RhizomeView extends ItemView {
             });
         }
 
-        // 2. Inyectamos el enlace silenciosamente en la nota original
-        const linkToInject = ` [[${target.file.basename}#^${targetId}]]`;
+        // 2. Inyectamos el enlace silenciosamente según la Brújula
+        let linkToInject = "";
+        if (direction === 'Classic') {
+            linkToInject = ` [[${target.file.basename}#^${targetId}]]`;
+        } else {
+            linkToInject = ` [${direction}:: [[${target.file.basename}#^${targetId}]]]`;
+        }
         
         await this.plugin.app.vault.process(source.file, (data) => {
             const lines = data.split('\n');
@@ -4997,6 +5688,88 @@ export class RhizomeView extends ItemView {
         });
 
         new Notice("✨ Conexión semántica establecida con éxito!");
+    }
+// ======================================================
+    // 🕸️ MOTOR ELÁSTICO 3D: VECTORES MATEMÁTICOS REALES
+    // ======================================================
+    redrawMoleculeLines(validNodes: any[], positions: Map<string, {x: number, y: number, z: number}>, linesContainer: HTMLElement) {
+        linesContainer.empty(); // Limpiamos las líneas viejas de la RAM
+
+        validNodes.forEach(node => {
+            if (node.compassLinks && node.compassLinks.length > 0) {
+                node.compassLinks.forEach((link: any) => {
+                    const rawTarget = link.target.split('|')[0].trim().replace('[[', '').replace(']]', '');
+                    const targetIdMatch = rawTarget.match(/#\^([a-zA-Z0-9]+)/);
+                    let targetNode = null;
+                    
+                    if (targetIdMatch) {
+                        targetNode = validNodes.find(n => n.id === targetIdMatch[1] || n.blockId === targetIdMatch[1]);
+                    } else {
+                        targetNode = validNodes.find(n => n.file.basename === rawTarget || n.text.includes(rawTarget));
+                    }
+
+                    if (targetNode && positions.has(node.id) && positions.has(targetNode.id)) {
+                        const sPos = positions.get(node.id)!;
+                        const tPos = positions.get(targetNode.id)!;
+
+                        // 🎯 Coordenadas 3D (Origen y Destino)
+                        const startX = sPos.x + 120; 
+                        const startY = sPos.y + 40;  
+                        const startZ = sPos.z || 0;  
+
+                        const endX = tPos.x + 120;
+                        const endY = tPos.y + 40;
+                        const endZ = tPos.z || 0;
+
+                        // 📐 Trigonometría 3D (Distancia y Ángulos Euler)
+                        const dx = endX - startX;
+                        const dy = endY - startY;
+                        const dz = endZ - startZ;
+                        
+                        const dist2D = Math.hypot(dx, dy);
+                        const length = Math.hypot(dist2D, dz); // Hipotenusa real 3D
+                        
+                        // Rotación Z (Apunta en el plano de la mesa)
+                        const angleZ = Math.atan2(dy, dx) * (180 / Math.PI);
+                        // Rotación Y (Apunta hacia arriba o abajo en profundidad)
+                        const angleY = Math.atan2(-dz, dist2D) * (180 / Math.PI);
+
+                        // 🎨 Paleta de colores semánticos
+                        const linkColor = link.direction === 'north' ? "var(--color-blue, #4a90e2)" : 
+                                          link.direction === 'south' ? "var(--color-green, #50e3c2)" : 
+                                          link.direction === 'east' ? "var(--color-orange, #f5a623)" : 
+                                          link.direction === 'west' ? "var(--color-red, #d0021b)" : "var(--interactive-accent)";
+
+                        // 🏗️ Inyección del Vector 3D puro
+                        const line = linesContainer.createDiv({ cls: 'cornell-3d-line' });
+                        line.style.position = "absolute";
+                        line.style.left = "0px";
+                        line.style.top = "0px";
+                        line.style.width = `${length}px`;
+                        line.style.height = "3px"; 
+                        line.style.transformOrigin = "0 50%"; // Pivote atado al nodo padre
+                        // Aplicamos el teletransporte cuántico
+                        line.style.transform = `translate3d(${startX}px, ${startY}px, ${startZ}px) rotateZ(${angleZ}deg) rotateY(${angleY}deg)`;
+                        line.style.pointerEvents = "none";
+                        
+                        // Efecto visual: Línea láser punteada
+                        line.style.backgroundImage = `linear-gradient(to right, ${linkColor} 50%, transparent 50%)`;
+                        line.style.backgroundSize = "15px 3px";
+                        line.style.opacity = "0.8";
+
+                        // 🏹 Construcción de la punta de flecha nativa
+                        const arrow = line.createDiv();
+                        arrow.style.position = "absolute";
+                        arrow.style.right = "0";
+                        arrow.style.top = "50%";
+                        arrow.style.transform = "translate(100%, -50%)"; // Desfasar la flecha justo en la punta de la línea
+                        arrow.style.borderTop = "6px solid transparent";
+                        arrow.style.borderBottom = "6px solid transparent";
+                        arrow.style.borderLeft = `12px solid ${linkColor}`;
+                    }
+                });
+            }
+        });
     }
 }
 
@@ -5765,13 +6538,21 @@ this.registerEvent(
                 });
                 
                 finalText = finalText.replace(imgRegex, '').trim(); 
+
+                // 🧭 NUEVO: Cazador de enlaces de brújula (borra el bloque completo [South:: [[...]]])
+                const compassRegex = /\[(North|South|East|West)::\s*\[\[([\s\S]*?)\]\]\]/gi;
+                finalText = finalText.replace(compassRegex, '').trim();
+
+                // 🔗 CAZADOR CLÁSICO: Borrar las conexiones "Thread" normales
                 const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
                 finalText = finalText.replace(linkRegex, '').trim();
 
                 const safeOriginal = encodeURIComponent(fullMatch);
                 
                 // Determinamos de qué lado va el borde según la dirección (> derecha, < izquierda)
-                const borderStyle = direction === '>' ? `border-left: 3px solid ${matchedColor};` : `border-right: 3px solid ${matchedColor};`;
+                // Lógica nueva (Corregida)
+                // Si direction es '>', va a la izquierda, por lo que el borde separador va a la derecha.
+                const borderStyle = direction === '>' ? `border-right: 3px solid ${matchedColor};` : `border-left: 3px solid ${matchedColor};`;
                 
                 // Inyectamos el span guardando la direccionalidad (data-direction) y respetando la estructura del regex para restoreFromPrint
                 marginaliasToInject += `<span class="cornell-print-margin" data-original="${safeOriginal}" data-direction="${direction}" style="${borderStyle} color: ${matchedColor};">${finalText}${imgHtml}</span>`;

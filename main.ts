@@ -3670,46 +3670,73 @@ async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
 }
 
 // --- SETTINGS TAB ---
-class CornellSettingTab extends PluginSettingTab {
+export class CornellSettingTab extends PluginSettingTab {
     plugin: CornellMarginalia;
-    constructor(app: App, plugin: CornellMarginalia) { super(app, plugin); this.plugin = plugin; }
+
+    constructor(app: App, plugin: CornellMarginalia) { 
+        super(app, plugin); 
+        this.plugin = plugin; 
+    }
 
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
+        
         containerEl.createEl('h2', { text: 'Cornell Marginalia Settings' });
 
-        containerEl.createEl('h3', { text: 'General Appearance' });
+        // ======================================================
+        // 🎨 APPEARANCE & RENDERING
+        // ======================================================
+        containerEl.createEl('h3', { text: '🎨 Appearance & Rendering' });
 
         new Setting(containerEl)
-         .setName('Extract Highlights')
-         .setDesc('OPTIONAL: Include standard text highlights (==text==) in the Explorer and Pinboard.')
-         .addToggle(toggle => toggle
-             .setValue(this.plugin.settings.extractHighlights)
-             .onChange(async (value) => {
-                 this.plugin.settings.extractHighlights = value;
-                 await this.plugin.saveSettings();
-                 this.plugin.app.workspace.getLeavesOfType(CORNELL_VIEW_TYPE).forEach(leaf => {
-                     if (leaf.view instanceof CornellNotesView) leaf.view.scanNotes();
-                 });
-             }));
+            .setName('Margin Alignment')
+            .addDropdown(d => d
+                .addOption('left', 'Left')
+                .addOption('right', 'Right')
+                .setValue(this.plugin.settings.alignment)
+                .onChange(async (v) => { 
+                    this.plugin.settings.alignment = v as any; 
+                    await this.plugin.saveSettings(); 
+                    this.plugin.updateStyles(); 
+                })
+            );
 
         new Setting(containerEl)
-         .setName('Ignored Folders for Highlights')
-         .setDesc('Comma-separated list of folders to ignore ONLY for highlights (e.g., Excalidraw, Templates).')
-         .addTextArea(t => t.setValue(this.plugin.settings.ignoredHighlightFolders).onChange(async v => { 
-             this.plugin.settings.ignoredHighlightFolders = v; 
-             await this.plugin.saveSettings(); 
-         }));
+            .setName('Margin Width (%)')
+            .addSlider(s => s
+                .setLimits(15, 60, 1)
+                .setValue(this.plugin.settings.marginWidth)
+                .setDynamicTooltip()
+                .onChange(async (v) => { 
+                    this.plugin.settings.marginWidth = v; 
+                    await this.plugin.saveSettings(); 
+                    this.plugin.updateStyles(); 
+                })
+            );
 
-     new Setting(containerEl)
-         .setName('Ignored Highlight Texts')
-         .setDesc('Comma-separated list of exact texts or fragments to ignore (e.g., Switch to EXCALIDRAW VIEW).')
-         .addTextArea(t => t.setValue(this.plugin.settings.ignoredHighlightTexts).onChange(async v => { 
-             this.plugin.settings.ignoredHighlightTexts = v; 
-             await this.plugin.saveSettings(); 
-         }));
-        
+        new Setting(containerEl)
+            .setName('Font Size')
+            .addText(t => t
+                .setValue(this.plugin.settings.fontSize)
+                .onChange(async (v) => { 
+                    this.plugin.settings.fontSize = v; 
+                    await this.plugin.saveSettings(); 
+                    this.plugin.updateStyles(); 
+                })
+            );
+
+        new Setting(containerEl)
+            .setName('Font Family')
+            .addText(t => t
+                .setValue(this.plugin.settings.fontFamily)
+                .onChange(async (v) => { 
+                    this.plugin.settings.fontFamily = v; 
+                    await this.plugin.saveSettings(); 
+                    this.plugin.updateStyles(); 
+                })
+            );
+
         new Setting(containerEl)
             .setName('Enable in Reading View')
             .setDesc('Shows marginalia in reading mode. Turn this off if you prefer a clean view.')
@@ -3718,79 +3745,184 @@ class CornellSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.enableReadingView = value;
                     await this.plugin.saveSettings();
-                    new Notice('Reload the note to see changes in Reading View');
-                }));
-        
-        
-        
-        new Setting(containerEl).setName('Margin Alignment').addDropdown(d => d.addOption('left', 'Left').addOption('right', 'Right').setValue(this.plugin.settings.alignment).onChange(async v => { this.plugin.settings.alignment = v as any; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
-        new Setting(containerEl).setName('Margin Width (%)').addSlider(s => s.setLimits(15, 60, 1).setValue(this.plugin.settings.marginWidth).setDynamicTooltip().onChange(async v => { this.plugin.settings.marginWidth = v; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
-        new Setting(containerEl).setName('Font Size').addText(t => t.setValue(this.plugin.settings.fontSize).onChange(async v => { this.plugin.settings.fontSize = v; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
-        new Setting(containerEl).setName('Font Family').addText(t => t.setValue(this.plugin.settings.fontFamily).onChange(async v => { this.plugin.settings.fontFamily = v; await this.plugin.saveSettings(); this.plugin.updateStyles(); }));
+                    new Notice('Reload the note to see changes in Reading View.');
+                })
+            );
 
-        containerEl.createEl('h3', { text: 'Color Tags' });
+        new Setting(containerEl)
+            .setName('Extract Highlights')
+            .setDesc('OPTIONAL: Include standard text highlights (==text==) in the Explorer and Pinboard.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.extractHighlights)
+                .onChange(async (value) => {
+                    this.plugin.settings.extractHighlights = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.app.workspace.getLeavesOfType(CORNELL_VIEW_TYPE).forEach(leaf => {
+                        if (leaf.view instanceof CornellNotesView) leaf.view.scanNotes();
+                    });
+                })
+            );
+
+        // ======================================================
+        // 🏷️ COLOR TAGS
+        // ======================================================
+        containerEl.createEl('h3', { text: '🏷️ Color Tags' });
+        
         this.plugin.settings.tags.forEach((tag, index) => {
-            new Setting(containerEl).setName(`Tag ${index + 1}`).addText(t => t.setValue(tag.prefix).onChange(async v => { this.plugin.settings.tags[index].prefix = v; await this.plugin.saveSettings(); this.plugin.app.workspace.updateOptions(); })).addColorPicker(c => c.setValue(tag.color).onChange(async v => { this.plugin.settings.tags[index].color = v; await this.plugin.saveSettings(); this.plugin.app.workspace.updateOptions(); })).addButton(b => b.setIcon('trash').onClick(async () => { this.plugin.settings.tags.splice(index, 1); await this.plugin.saveSettings(); this.display(); this.plugin.app.workspace.updateOptions(); }));
+            new Setting(containerEl)
+                .setName(`Tag ${index + 1}`)
+                .addText(t => t
+                    .setValue(tag.prefix)
+                    .onChange(async (v) => { 
+                        this.plugin.settings.tags[index].prefix = v; 
+                        await this.plugin.saveSettings(); 
+                        this.plugin.app.workspace.updateOptions(); 
+                    })
+                )
+                .addColorPicker(c => c
+                    .setValue(tag.color)
+                    .onChange(async (v) => { 
+                        this.plugin.settings.tags[index].color = v; 
+                        await this.plugin.saveSettings(); 
+                        this.plugin.app.workspace.updateOptions(); 
+                    })
+                )
+                .addButton(b => b
+                    .setIcon('trash')
+                    .onClick(async () => { 
+                        this.plugin.settings.tags.splice(index, 1); 
+                        await this.plugin.saveSettings(); 
+                        this.display(); 
+                        this.plugin.app.workspace.updateOptions(); 
+                    })
+                );
         });
-        new Setting(containerEl).addButton(b => b.setButtonText('Add Tag').onClick(async () => { this.plugin.settings.tags.push({ prefix: 'New', color: '#888' }); await this.plugin.saveSettings(); this.display(); }));
-        
-        containerEl.createEl('h3', { text: 'File & Output Management' });
 
-    // Dentro de display() en CornellSettingTab:
-    new Setting(containerEl)
-    .setName('Omni-Capture Default Folder')
-    .setDesc('Folder where new marginalia files will be created (leave empty for root).')
-    .addText(text => text
-        .setPlaceholder('Example: 00_Inbox')
-        .setValue(this.plugin.settings.omniCaptureFolder)
-        .onChange(async (value) => {
-            this.plugin.settings.omniCaptureFolder = value.trim();
-            await this.plugin.saveSettings();
-        })); //
-
-        // 📁 NUEVO AJUSTE PARA ZK
+        new Setting(containerEl)
+            .addButton(b => b
+                .setButtonText('Add Tag')
+                .onClick(async () => { 
+                    this.plugin.settings.tags.push({ prefix: 'New', color: '#888' }); 
+                    await this.plugin.saveSettings(); 
+                    this.display(); 
+                })
+            );
         
+        // ======================================================
+        // 📂 FILE & OUTPUT MANAGEMENT
+        // ======================================================
+        containerEl.createEl('h3', { text: '📂 File & Output Management' });
+
+        new Setting(containerEl)
+            .setName('Omni-Capture Default Folder')
+            .setDesc('Folder where new marginalia files will be created (leave empty for root).')
+            .addText(text => text
+                .setPlaceholder('Example: 00_Inbox')
+                .setValue(this.plugin.settings.omniCaptureFolder)
+                .onChange(async (value) => {
+                    this.plugin.settings.omniCaptureFolder = value.trim();
+                    await this.plugin.saveSettings();
+                })
+            ); 
+
         new Setting(containerEl)
             .setName('Zettelkasten Folder')
-            .setDesc('Where should your ZK notes be created? (Leave empty for root)')
-            .addText(t => t.setValue(this.plugin.settings.zkFolder).onChange(async v => { this.plugin.settings.zkFolder = v; await this.plugin.saveSettings(); }));
+            .setDesc('Where should your ZK notes be created? (Leave empty for root).')
+            .addText(t => t
+                .setValue(this.plugin.settings.zkFolder)
+                .onChange(async (v) => { 
+                    this.plugin.settings.zkFolder = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
 
         new Setting(containerEl)
             .setName('Doodles Folder')
-            .setDesc('Where should your hand-drawn images be saved? (Leave empty for root)')
-            .addText(t => t.setValue(this.plugin.settings.doodleFolder).onChange(async v => { this.plugin.settings.doodleFolder = v; await this.plugin.saveSettings(); }));
+            .setDesc('Where should your hand-drawn images be saved? (Leave empty for root).')
+            .addText(t => t
+                .setValue(this.plugin.settings.doodleFolder)
+                .onChange(async (v) => { 
+                    this.plugin.settings.doodleFolder = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
 
         new Setting(containerEl)
             .setName('Evidence Boards Folder')
             .setDesc('Where should your Canvas files be exported?')
-            .addText(t => t.setValue(this.plugin.settings.canvasFolder).onChange(async v => { this.plugin.settings.canvasFolder = v; await this.plugin.saveSettings(); }));
+            .addText(t => t
+                .setValue(this.plugin.settings.canvasFolder)
+                .onChange(async (v) => { 
+                    this.plugin.settings.canvasFolder = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
 
         new Setting(containerEl)
             .setName('Pinboards Folder')
             .setDesc('Where should your exported Pinboard Markdown files go?')
-            .addText(t => t.setValue(this.plugin.settings.pinboardFolder).onChange(async v => { this.plugin.settings.pinboardFolder = v; await this.plugin.saveSettings(); }));
+            .addText(t => t
+                .setValue(this.plugin.settings.pinboardFolder)
+                .onChange(async (v) => { 
+                    this.plugin.settings.pinboardFolder = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
 
-        containerEl.createEl('h3', { text: 'Advanced' });
-        new Setting(containerEl).setName('Ignored Folders').addTextArea(t => t.setValue(this.plugin.settings.ignoredFolders).onChange(async v => { this.plugin.settings.ignoredFolders = v; await this.plugin.saveSettings(); this.plugin.app.workspace.updateOptions(); }));
-    
+        // ======================================================
+        // ⚙️ ADVANCED & EXCLUSIONS
+        // ======================================================
+        containerEl.createEl('h3', { text: '⚙️ Advanced & Exclusions' });
+        
+        new Setting(containerEl)
+            .setName('Ignored Folders')
+            .setDesc('Comma-separated list of folders to completely ignore.')
+            .addTextArea(t => t
+                .setValue(this.plugin.settings.ignoredFolders)
+                .onChange(async (v) => { 
+                    this.plugin.settings.ignoredFolders = v; 
+                    await this.plugin.saveSettings(); 
+                    this.plugin.app.workspace.updateOptions(); 
+                })
+            );
 
+        new Setting(containerEl)
+            .setName('Ignored Folders for Highlights')
+            .setDesc('Comma-separated list of folders to ignore ONLY for highlights (e.g., Excalidraw, Templates).')
+            .addTextArea(t => t
+                .setValue(this.plugin.settings.ignoredHighlightFolders)
+                .onChange(async (v) => { 
+                    this.plugin.settings.ignoredHighlightFolders = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
 
-    // --- 🧩 SECCIÓN DE ADDONS ---
+        new Setting(containerEl)
+            .setName('Ignored Highlight Texts')
+            .setDesc('Comma-separated list of exact texts or fragments to ignore (e.g., Switch to EXCALIDRAW VIEW).')
+            .addTextArea(t => t
+                .setValue(this.plugin.settings.ignoredHighlightTexts)
+                .onChange(async (v) => { 
+                    this.plugin.settings.ignoredHighlightTexts = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
+
+        // ======================================================
+        // 🧩 ADDONS & MODULES
+        // ======================================================
         containerEl.createEl('h3', { text: '🧩 Addons & Modules' });
 
+        // --- ADDON: GAMIFICATION ---
         new Setting(containerEl)
             .setName('Gamification & User Profile')
             .setDesc('Turn your marginalia into a game! Earn XP, level up, and customize your profile sidebar.')
             .addToggle(toggle => toggle
-                // Leemos si la mochila dice que está encendido o apagado
                 .setValue(this.plugin.settings.addons["gamification-profile"])
                 .onChange(async (value) => {
-                    
-                    // 1. Actualizamos la memoria (mochila)
                     this.plugin.settings.addons["gamification-profile"] = value;
                     await this.plugin.saveSettings();
 
-                    // 2. Encendemos o apagamos el motor en tiempo real
                     if (value) {
                         this.plugin.gamificationAddon.load();
                         new Notice("🎮 Gamification Addon Enabled!");
@@ -3798,68 +3930,114 @@ class CornellSettingTab extends PluginSettingTab {
                         this.plugin.gamificationAddon.unload();
                         new Notice("🛑 Gamification Addon Disabled.");
                     }
+                    this.display(); // Refresh to show/hide sub-settings
                 })
             );    
-       // Controles hijos para Gamificación (Foto y Frase)
-            if (this.plugin.settings.addons["gamification-profile"]) {
-                new Setting(containerEl).setName('Profile Image URL').setDesc('Paste an image URL for your avatar.').addText(text => text.setValue(this.plugin.settings.userStats.profileImage).onChange(async (value) => {
-                    this.plugin.settings.userStats.profileImage = value; await this.plugin.saveSettings();
-                }));
-                new Setting(containerEl).setName('Inspirational Quote').setDesc('A short bio or quote for your profile.').addText(text => text.setValue(this.plugin.settings.userStats.quote).onChange(async (value) => {
-                    this.plugin.settings.userStats.quote = value; await this.plugin.saveSettings();
-                }));
-            }
-
-            // --- ADDON: CUSTOM BACKGROUND ---
+       
+        if (this.plugin.settings.addons["gamification-profile"]) {
             new Setting(containerEl)
-                .setName('Custom Explorer Background')
-                .setDesc('Add a beautiful background image to your Marginalia Explorer.')
-                .addToggle(toggle => toggle
-                    .setValue(this.plugin.settings.addons["custom-background"])
+                .setName('Profile Image URL')
+                .setDesc('Paste an image URL for your avatar.')
+                .addText(text => text
+                    .setValue(this.plugin.settings.userStats.profileImage)
                     .onChange(async (value) => {
-                        this.plugin.settings.addons["custom-background"] = value;
+                        this.plugin.settings.userStats.profileImage = value; 
                         await this.plugin.saveSettings();
-                        if (value) { this.plugin.backgroundAddon.load(); } 
-                        else { this.plugin.backgroundAddon.unload(); }
-                        this.display(); // Redibuja el menú para mostrar/ocultar las opciones de abajo
                     })
                 );
-
-            if (this.plugin.settings.addons["custom-background"]) {
-                new Setting(containerEl).setName('Background Image URL').setDesc('Paste an image URL (e.g., from Unsplash) or local vault path.').addText(text => text.setValue(this.plugin.settings.userStats.customBackground).onChange(async (value) => {
-                    this.plugin.settings.userStats.customBackground = value; await this.plugin.saveSettings(); this.plugin.backgroundAddon.applyStyles();
-                }));
-                new Setting(containerEl).setName('Background Blur').setDesc('Amount of blur (lo-fi effect).').addSlider(slider => slider.setLimits(0, 20, 1).setValue(this.plugin.settings.userStats.bgBlur).setDynamicTooltip().onChange(async (value) => {
-                    this.plugin.settings.userStats.bgBlur = value; await this.plugin.saveSettings(); this.plugin.backgroundAddon.applyStyles();
-                }));
-                new Setting(containerEl).setName('Dark Overlay Opacity').setDesc('Dims the background so text is readable (0 = invisible, 1 = pitch black).').addSlider(slider => slider.setLimits(0.1, 1.0, 0.05).setValue(this.plugin.settings.userStats.bgOpacity).setDynamicTooltip().onChange(async (value) => {
-                    this.plugin.settings.userStats.bgOpacity = value; await this.plugin.saveSettings(); this.plugin.backgroundAddon.applyStyles();
-                }));
-            } 
-    // --- ADDON: MÁQUINA DEL TIEMPO (RIZOMA) ---
             new Setting(containerEl)
-                .setName('🌱 Time Machine & Rhizome')
-                .setDesc('Explore your marginaliae on a chronological, full-screen interactive canvas with spaced repetition.')
-                .addToggle(toggle => toggle
-                    .setValue(this.plugin.settings.addons["rhizome-time-machine"])
+                .setName('Inspirational Quote')
+                .setDesc('A short bio or quote for your profile.')
+                .addText(text => text
+                    .setValue(this.plugin.settings.userStats.quote)
                     .onChange(async (value) => {
-                        this.plugin.settings.addons["rhizome-time-machine"] = value;
+                        this.plugin.settings.userStats.quote = value; 
                         await this.plugin.saveSettings();
-                        if (value) { 
-                            this.plugin.rhizomeAddon.load(); 
-                            new Notice("🌱 Time Machine Enabled! Check the left ribbon.");
-                        } else { 
-                            this.plugin.rhizomeAddon.unload(); 
-                        }
                     })
                 );
-            // --- 🌌 FONDO DE LA MÁQUINA DEL TIEMPO ---
+        }
+
+        // --- ADDON: CUSTOM BACKGROUND ---
+        new Setting(containerEl)
+            .setName('Custom Explorer Background')
+            .setDesc('Add a beautiful background image to your Marginalia Explorer.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.addons["custom-background"])
+                .onChange(async (value) => {
+                    this.plugin.settings.addons["custom-background"] = value;
+                    await this.plugin.saveSettings();
+                    if (value) { this.plugin.backgroundAddon.load(); } 
+                    else { this.plugin.backgroundAddon.unload(); }
+                    this.display(); 
+                })
+            );
+
+        if (this.plugin.settings.addons["custom-background"]) {
+            new Setting(containerEl)
+                .setName('Background Image URL')
+                .setDesc('Paste an image URL (e.g., from Unsplash) or local vault path.')
+                .addText(text => text
+                    .setValue(this.plugin.settings.userStats.customBackground)
+                    .onChange(async (value) => {
+                        this.plugin.settings.userStats.customBackground = value; 
+                        await this.plugin.saveSettings(); 
+                        this.plugin.backgroundAddon.applyStyles();
+                    })
+                );
+            new Setting(containerEl)
+                .setName('Background Blur')
+                .setDesc('Amount of blur (lo-fi effect).')
+                .addSlider(slider => slider
+                    .setLimits(0, 20, 1)
+                    .setValue(this.plugin.settings.userStats.bgBlur)
+                    .setDynamicTooltip()
+                    .onChange(async (value) => {
+                        this.plugin.settings.userStats.bgBlur = value; 
+                        await this.plugin.saveSettings(); 
+                        this.plugin.backgroundAddon.applyStyles();
+                    })
+                );
+            new Setting(containerEl)
+                .setName('Dark Overlay Opacity')
+                .setDesc('Dims the background so text is readable (0 = invisible, 1 = pitch black).')
+                .addSlider(slider => slider
+                    .setLimits(0.1, 1.0, 0.05)
+                    .setValue(this.plugin.settings.userStats.bgOpacity)
+                    .setDynamicTooltip()
+                    .onChange(async (value) => {
+                        this.plugin.settings.userStats.bgOpacity = value; 
+                        await this.plugin.saveSettings(); 
+                        this.plugin.backgroundAddon.applyStyles();
+                    })
+                );
+        } 
+
+        // --- ADDON: TIME MACHINE & RHIZOME ---
+        new Setting(containerEl)
+            .setName('🌱 Time Machine & Rhizome')
+            .setDesc('Explore your marginaliae on a chronological, full-screen interactive canvas with spaced repetition.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.addons["rhizome-time-machine"])
+                .onChange(async (value) => {
+                    this.plugin.settings.addons["rhizome-time-machine"] = value;
+                    await this.plugin.saveSettings();
+                    if (value) { 
+                        this.plugin.rhizomeAddon.load(); 
+                        new Notice("🌱 Time Machine Enabled! Check the left ribbon.");
+                    } else { 
+                        this.plugin.rhizomeAddon.unload(); 
+                        new Notice("🛑 Time Machine Disabled.");
+                    }
+                    this.display();
+                })
+            );
+            
+        if (this.plugin.settings.addons["rhizome-time-machine"]) {
             new Setting(containerEl)
                 .setName('🌌 Time Machine Wallpaper URL')
-                .setDesc('Pega un enlace directo a una imagen (jpg, png, gif) para el fondo de tu máquina del tiempo.')
+                .setDesc('Paste a direct link to an image (jpg, png, gif) for your Time Machine background.')
                 .addText(text => text
-                    .setPlaceholder('https://ejemplo.com/fondo.jpg')
-                    // Usamos || "" como seguro por si la variable aún no existe
+                    .setPlaceholder('https://example.com/background.jpg')
                     .setValue((this.plugin.settings as any).rhizomeBgImage || "") 
                     .onChange(async (value) => {
                         (this.plugin.settings as any).rhizomeBgImage = value;
@@ -3869,7 +4047,7 @@ class CornellSettingTab extends PluginSettingTab {
 
             new Setting(containerEl)
                 .setName('🌌 Wallpaper Opacity')
-                .setDesc('Ajusta la transparencia del fondo para que no interfiera con tus notas (0.1 a 1.0).')
+                .setDesc('Adjust the background transparency so it doesn\'t interfere with your notes (0.1 to 1.0).')
                 .addSlider(slider => slider
                     .setLimits(0.1, 1.0, 0.1)
                     .setValue((this.plugin.settings as any).rhizomeBgOpacity || 0.3)
@@ -3880,8 +4058,8 @@ class CornellSettingTab extends PluginSettingTab {
                     })
                 );
             new Setting(containerEl)
-                .setName('🌌 Wallpaper Blur (Desenfoque)')
-                .setDesc('Aplica un efecto de desenfoque al fondo para que tus notas resalten más (0px a 20px).')
+                .setName('🌌 Wallpaper Blur')
+                .setDesc('Apply a blur effect to the background to make your notes stand out more (0 to 20).')
                 .addSlider(slider => slider
                     .setLimits(0, 20, 1)
                     .setValue((this.plugin.settings as any).rhizomeBgBlur !== undefined ? (this.plugin.settings as any).rhizomeBgBlur : 2)
@@ -3891,36 +4069,37 @@ class CornellSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     })
                 );
-            
-            new Setting(containerEl)
+        }
+        
+        // --- ADDON: PDF DOODLE ---
+        new Setting(containerEl)
             .setName('Pdf Doodle & Harvest')
-            .setDesc('Habilita el modo de dibujo temporal sobre PDFs.')
+            .setDesc('Enable temporary drawing mode on PDFs.')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.enablePdfDoodle)
                 .onChange(async (value) => {
                     this.plugin.settings.enablePdfDoodle = value;
                     await this.plugin.saveSettings();
-                    new Notice("Reinicia Obsidian para aplicar cambios en los Addons.");
-            }));
+                    new Notice("Restart Obsidian to apply Addon changes.");
+                })
+            );
 
-            new Setting(containerEl)
+        // --- ADDON: SUPER DOODLE ---
+        new Setting(containerEl)
             .setName(this.plugin.superDoodleAddon.name)
             .setDesc(this.plugin.superDoodleAddon.description)
             .addToggle(toggle => toggle
-                // Leemos el valor actual (si no existe, por defecto es false)
                 .setValue(this.plugin.settings.addons[this.plugin.superDoodleAddon.id] || false)
                 .onChange(async (value) => {
-                    // 1. Guardamos el nuevo estado en la configuración
                     this.plugin.settings.addons[this.plugin.superDoodleAddon.id] = value;
                     await this.plugin.saveSettings();
 
-                    // 2. Ejecutamos el parcheo en tiempo real
                     if (value) {
                         this.plugin.superDoodleAddon.load();
-                        new Notice(`✅ ${this.plugin.superDoodleAddon.name} activado`);
+                        new Notice(`✅ ${this.plugin.superDoodleAddon.name} enabled`);
                     } else {
                         this.plugin.superDoodleAddon.unload();
-                        new Notice(`❌ ${this.plugin.superDoodleAddon.name} desactivado`);
+                        new Notice(`❌ ${this.plugin.superDoodleAddon.name} disabled`);
                     }
                 })
             );

@@ -388,9 +388,28 @@ const createCornellExtension = (app: App, settings: CornellSettings, getActiveRe
                 const noteContent = match[2]; 
 
                 const tree = syntaxTree(state);
-                const node = tree.resolve(matchStart, 1);
-                const isCode = node.name.includes("code") || node.name.includes("Code") || node.name.includes("math");
-                if (isCode) continue;
+const node = tree.resolve(matchStart, 1);
+const isCode = node.name.includes("code") || node.name.includes("Code") || node.name.includes("math");
+
+// 🛡️ ESCUDO INTELIGENTE: Bloquea el código, EXCEPTO si es nuestro bloque editorial
+let isCornellBlock = false;
+if (isCode) {
+    let lineNum = state.doc.lineAt(matchStart).number;
+    // Escaneamos hacia arriba para ver en qué lenguaje está el bloque
+    while (lineNum > 0) {
+        const lineText = state.doc.line(lineNum).text.trim();
+        if (lineText.startsWith("```") || lineText.startsWith("~~~")) {
+            if (lineText.toLowerCase().includes("cornell")) {
+                isCornellBlock = true;
+            }
+            break;
+        }
+        lineNum--;
+    }
+}
+
+// Si es código normal (ej. JS, Python), lo ignoramos. Si es Cornell, lo dibujamos.
+if (isCode && !isCornellBlock) continue;
 
                 let isCursorInside = false;
                 const line = state.doc.lineAt(matchStart);
@@ -2672,18 +2691,34 @@ export class CornellNotesView extends ItemView {
                 }
                 parentAtLevel[indent] = nodeId;
 
-                // 📚 3. EXTRAER EL TEXTO DEL HOVER
-                const fileContent = await this.plugin.app.vault.cachedRead(item.file);
-                const lines = fileContent.split('\n');
-                const startLine = Math.max(0, item.line - 1);
-                const endLine = Math.min(lines.length - 1, item.line + 1);
-                
-                let contextText = '';
-                for (let i = startLine; i <= endLine; i++) {
-                    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
-                    if (cleanLine) contextText += cleanLine + '\n';
-                }
-                contextText = contextText.trim();
+                // 📚 3. EXTRAER EL TEXTO DEL CONTEXTO (BLOQUE COMPLETO)
+const fileContent = await this.plugin.app.vault.cachedRead(item.file);
+const lines = fileContent.split('\n');
+
+let startLine = item.line;
+let endLine = item.line;
+
+// Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
+while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
+    startLine--;
+}
+// Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
+while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
+    endLine++;
+}
+
+let contextText = '';
+for (let i = startLine; i <= endLine; i++) {
+    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+    
+    // Ignoramos las etiquetas de código para que el Canvas se vea limpio
+    if (cleanLine.startsWith('```')) continue;
+    
+    if (cleanLine) {
+        contextText += cleanLine + '\n';
+    }
+}
+contextText = contextText.trim();
 
                 // 📄 4. NODO CONTEXTO
                 if (contextText) {
@@ -3335,38 +3370,41 @@ export class CornellNotesView extends ItemView {
 
                 const lines = content.split('\n');
 
-                const startLine = Math.max(0, item.line - 1);
+// 🧠 EXTRACCIÓN DE BLOQUE INTELIGENTE
+let startLine = item.line;
+let endLine = item.line;
 
-                const endLine = Math.min(lines.length - 1, item.line + 1);
+// Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
+while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
+    startLine--;
+}
+// Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
+while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
+    endLine++;
+}
 
-                
+removeTooltip(); 
 
-                removeTooltip(); 
+// Extraemos todo el texto del bloque
+let rawBlock = '';
+let highlightApplied = false;
 
+for (let i = startLine; i <= endLine; i++) {
+    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+    
+    // Ignoramos las etiquetas de código para que el tooltip se vea elegante
+    if (cleanLine.startsWith('```')) continue;
 
-                // Extraemos todo el texto del bloque primero para analizarlo
-
-                let rawBlock = '';
-
-                for (let i = startLine; i <= endLine; i++) {
-
-                    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
-
-                    if (cleanLine) {
-
-                        if (i === item.line) {
-
-                            rawBlock += `==${cleanLine}==\n`; 
-
-                        } else {
-
-                            rawBlock += `${cleanLine}\n`;
-
-                        }
-
-                    }
-
-                }
+    if (cleanLine) {
+        // Magia de resaltado: Si la nota estaba en una línea vacía, resaltará la siguiente línea real de texto
+        if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
+            rawBlock += `==${cleanLine}==\n`; 
+            highlightApplied = true;
+        } else {
+            rawBlock += `${cleanLine}\n`;
+        }
+    }
+}
 
 
                 // 🎯 ESCÁNER DE PDF BLINDADO (Busca en todo el bloque)
@@ -4699,19 +4737,42 @@ export class RhizomeView extends ItemView {
                         if (!isHovering || !document.body.contains(node)) return;
 
                         const lines = content.split('\n');
-                        const startLine = Math.max(0, item.line - 1);
-                        const endLine = Math.min(lines.length - 1, item.line + 1);
-                        
-                        removeTooltip(); 
 
-                        let rawBlock = '';
-                        for (let i = startLine; i <= endLine; i++) {
-                            let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
-                            if (cleanLine) {
-                                if (i === item.line) rawBlock += `==${cleanLine}==\n`; 
-                                else rawBlock += `${cleanLine}\n`;
-                            }
-                        }
+// 🧠 EXTRACCIÓN DE BLOQUE INTELIGENTE
+let startLine = item.line;
+let endLine = item.line;
+
+// Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
+while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
+    startLine--;
+}
+// Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
+while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
+    endLine++;
+}
+
+removeTooltip(); 
+
+// Extraemos todo el texto del bloque
+let rawBlock = '';
+let highlightApplied = false;
+
+for (let i = startLine; i <= endLine; i++) {
+    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+    
+    // Ignoramos las etiquetas de código para que el tooltip se vea elegante
+    if (cleanLine.startsWith('```')) continue;
+
+    if (cleanLine) {
+        // Magia de resaltado: Si la nota estaba en una línea vacía, resaltará la siguiente línea real de texto
+        if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
+            rawBlock += `==${cleanLine}==\n`; 
+            highlightApplied = true;
+        } else {
+            rawBlock += `${cleanLine}\n`;
+        }
+    }
+}
 
                         const pdfRegex = /!*\[\[(.*?\.(?:pdf).*?)\]\]/i;
                         const pdfMatch = rawBlock.match(pdfRegex);
@@ -5287,19 +5348,42 @@ export class RhizomeView extends ItemView {
                     if (!isHovering || !document.body.contains(node)) return;
 
                     const lines = content.split('\n');
-                    const startLine = Math.max(0, item.line - 1);
-                    const endLine = Math.min(lines.length - 1, item.line + 1);
-                    
-                    removeTooltip(); 
 
-                    let rawBlock = '';
-                    for (let i = startLine; i <= endLine; i++) {
-                        let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
-                        if (cleanLine) {
-                            if (i === item.line) rawBlock += `==${cleanLine}==\n`; 
-                            else rawBlock += `${cleanLine}\n`;
-                        }
-                    }
+// 🧠 EXTRACCIÓN DE BLOQUE INTELIGENTE
+let startLine = item.line;
+let endLine = item.line;
+
+// Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
+while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
+    startLine--;
+}
+// Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
+while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
+    endLine++;
+}
+
+removeTooltip(); 
+
+// Extraemos todo el texto del bloque
+let rawBlock = '';
+let highlightApplied = false;
+
+for (let i = startLine; i <= endLine; i++) {
+    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+    
+    // Ignoramos las etiquetas de código para que el tooltip se vea elegante
+    if (cleanLine.startsWith('```')) continue;
+
+    if (cleanLine) {
+        // Magia de resaltado: Si la nota estaba en una línea vacía, resaltará la siguiente línea real de texto
+        if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
+            rawBlock += `==${cleanLine}==\n`; 
+            highlightApplied = true;
+        } else {
+            rawBlock += `${cleanLine}\n`;
+        }
+    }
+}
 
                     tooltipEl = document.createElement('div');
                     tooltipEl.className = 'popover hover-popover cornell-hover-tooltip markdown-rendered markdown-preview-view'; 
@@ -6259,6 +6343,28 @@ this.registerEvent(
             const wrapper = el.createDiv({ cls: 'cornell-reading-container cornell-editorial-wrapper' });
             wrapper.style.position = 'relative';
             wrapper.style.width = '100%';
+            // 👇 para el bloque 👇
+            el.style.overflow = "visible";
+            el.style.contain = "none";
+
+            // 👇 NUEVA CIRUGÍA DOM: Subimos por el árbol liberando restricciones dinámicamente
+            setTimeout(() => {
+            let parent = el.parentElement;
+    
+            // Subimos hasta llegar al límite seguro (el área de contenido principal)
+        while (parent && !parent.classList.contains('cm-content')) {
+        parent.style.setProperty('overflow', 'visible', 'important');
+        parent.style.setProperty('contain', 'none', 'important');
+        
+        // Si el padre es la línea de CodeMirror o el contenedor embed, le damos jerarquía Z
+        if (parent.classList.contains('cm-line') || parent.classList.contains('cm-embed-block')) {
+            parent.style.setProperty('z-index', '99', 'important');
+            parent.style.setProperty('position', 'relative', 'important');
+        }
+        parent = parent.parentElement;
+    }
+    }, 50); // Un pequeño timeout asegura que Obsidian ya montó todas sus capas nativas
+
 
             // 4. Renderizar el texto principal de forma nativa
             const contentCol = wrapper.createDiv({ cls: 'cornell-editorial-content' });

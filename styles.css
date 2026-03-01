@@ -1666,3 +1666,29 @@ body.theme-dark .cornell-pinboard-item img[src*="doodle_"] {
         page-break-inside: avoid !important;
         break-inside: avoid !important;
     }
+
+/* ======================================================
+   🚀 FIX: ROMPER LA CÁRCEL DEL LIVE PREVIEW (BLOQUE CERRADO)
+   ====================================================== */
+
+/* 1. Rompemos las restricciones de la línea maestra y el bloque incrustado */
+.markdown-source-view.mod-cm6 .cm-line:has(.block-language-cornell),
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-cornell),
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-cornell) > div {
+    contain: none !important;
+    overflow: visible !important;
+    clip-path: none !important;
+    
+    /* 2. LA MAGIA: Elevamos el contexto de apilamiento para que la nota flote SOBRE las demás líneas */
+    z-index: 99 !important; 
+    position: relative !important;
+}
+
+/* 3. Liberamos el contenedor exacto donde Obsidian inyecta tu procesador */
+.markdown-source-view.mod-cm6 .markdown-rendered.block-language-cornell {
+    contain: none !important;
+    overflow: visible !important;
+    background-color: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+}

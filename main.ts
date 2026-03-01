@@ -5873,6 +5873,26 @@ export default class CornellMarginalia extends Plugin {
         });
 
         this.addCommand({
+            id: 'insert-cornell-block',
+            name: 'Insert Cornell Block (Editorial)',
+            editorCallback: (editor: Editor) => {
+                const selection = editor.getSelection();
+                const startPos = editor.getCursor("from"); // Capturamos la posición inicial
+
+                if (selection) {
+                    // Empuja el texto seleccionado hacia abajo y deja la marginalia lista arriba
+                    editor.replaceSelection(`\`\`\`cornell\n%%>  %%\n${selection}\n\`\`\``);
+                } else {
+                    // Bloque vacío con marginalia lista
+                    editor.replaceSelection(`\`\`\`cornell\n%%>  %%\n\n\`\`\``);
+                }
+                
+                // Mágicamente ponemos el cursor dentro del %%>  %% (Línea + 1, Carácter 4)
+                editor.setCursor({ line: startPos.line + 1, ch: 4 });
+            }
+        });
+
+        this.addCommand({
             id: 'omni-capture',
             name: '⚡ Omni-Capture (Idea, Context & Doodle)',
             callback: () => {
@@ -6198,11 +6218,154 @@ this.registerEvent(
                     new DoodleModal(this.app, editor).open();
                 });
         });
+        // 4. Opción para insertar un Bloque Cornell Editorial
+        menu.addItem((item) => {
+            item
+                .setTitle("Insert Cornell Block")
+                .setIcon("columns")    // Ícono nativo que representa columnas
+                .setSection("insert")
+                .onClick(() => {
+                    const selection = editor.getSelection();
+                    const startPos = editor.getCursor("from");
+
+                    if (selection) {
+                        editor.replaceSelection(`\`\`\`cornell\n%%>  %%\n${selection}\n\`\`\``);
+                    } else {
+                        editor.replaceSelection(`\`\`\`cornell\n%%>  %%\n\n\`\`\``);
+                    }
+                    
+                    // Cursor francotirador dentro del %%>  %%
+                    editor.setCursor({ line: startPos.line + 1, ch: 4 });
+                });
+        });
     })
 );
 
 
 
+
+// 🚀 NUEVO MOTOR EDITORIAL: Bloques de código ```cornell
+        this.registerMarkdownCodeBlockProcessor("cornell", async (source, el, ctx) => {
+            if (!this.settings.enableReadingView) return;
+
+            // 1. Buscar la marginalia dentro de todo el bloque
+            const regex = /%%([><])([\s\S]*?)%%/;
+            let match = regex.exec(source);
+
+            // 2. Limpiar el texto principal (le quitamos la sintaxis de la marginalia)
+            const cleanSource = source.replace(regex, '').trim();
+
+            // 3. Crear el contenedor padre. ¡La posición relativa es la clave aquí!
+            const wrapper = el.createDiv({ cls: 'cornell-reading-container cornell-editorial-wrapper' });
+            wrapper.style.position = 'relative';
+            wrapper.style.width = '100%';
+
+            // 4. Renderizar el texto principal de forma nativa
+            const contentCol = wrapper.createDiv({ cls: 'cornell-editorial-content' });
+            await MarkdownRenderer.renderMarkdown(cleanSource, contentCol, ctx.sourcePath, this);
+
+            // 5. Procesar e inyectar la marginalia lateral
+            if (match) {
+                const direction = match[1];
+                let noteContent = match[2].trim();
+                const isFlashcard = noteContent.endsWith(";;");
+                if (isFlashcard) noteContent = noteContent.slice(0, -2).trim();
+
+                let matchedColor = null;
+                let finalNoteText = noteContent;
+                for (const tag of this.settings.tags) {
+                    if (finalNoteText.startsWith(tag.prefix)) {
+                        matchedColor = tag.color;
+                        finalNoteText = finalNoteText.substring(tag.prefix.length).trim();
+                        break;
+                    }
+                }
+
+                // Limpiar imágenes y links como en tu post-procesador original
+                let finalRenderText = finalNoteText;
+                const imagesToRender: string[] = [];
+                const imgRegex = /img:\s*\[\[(.*?)\]\]/gi;
+                const imgMatches = Array.from(finalRenderText.matchAll(imgRegex));
+                imgMatches.forEach(m => imagesToRender.push(m[1]));
+                finalRenderText = finalRenderText.replace(imgRegex, '').trim();
+
+                const threadLinks: string[] = [];
+                const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
+                const linkMatches = Array.from(finalRenderText.matchAll(linkRegex));
+                linkMatches.forEach(m => threadLinks.push(m[1]));
+                finalRenderText = finalRenderText.replace(linkRegex, '').trim();
+
+                // Crear la caja de la marginalia
+                const marginDiv = document.createElement("div");
+                marginDiv.className = "cm-cornell-margin reading-mode-margin cornell-editorial-margin";
+                
+                if (matchedColor) {
+                    marginDiv.style.setProperty('border-color', matchedColor, 'important');
+                    marginDiv.style.setProperty('color', matchedColor, 'important');
+                }
+
+                MarkdownRenderer.render(this.app, finalRenderText, marginDiv, ctx.sourcePath, this);
+
+                // Agregar imágenes si las hay
+                if (imagesToRender.length > 0) {
+                    imagesToRender.forEach(imgName => {
+                        const cleanName = imgName.split('|')[0];
+                        const file = this.app.metadataCache.getFirstLinkpathDest(cleanName, ctx.sourcePath);
+                        if (file) {
+                            const imgSrc = this.app.vault.getResourcePath(file);
+                            marginDiv.createEl('img', { attr: { src: imgSrc } });
+                        }
+                    });
+                }
+
+                // Agregar enlaces de hilos
+                if (threadLinks.length > 0) {
+                    const threadContainer = marginDiv.createDiv({ cls: 'cornell-thread-container' });
+                    threadLinks.forEach(linkTarget => {
+                        const btn = threadContainer.createEl('button', { cls: 'cornell-thread-btn', title: `Follow thread: ${linkTarget}` });
+                        btn.innerHTML = '🔗';
+                        btn.onclick = (e) => {
+                            e.preventDefault(); e.stopPropagation();
+                            this.app.workspace.openLinkText(linkTarget, ctx.sourcePath, true);
+                        };
+                    });
+                }
+
+                // Lógica para saber de qué lado va la nota
+                const isMainLeft = this.settings.alignment === 'left';
+                const isNoteLeft = (isMainLeft && direction === '>') || (!isMainLeft && direction === '<');
+
+                let colClass = isNoteLeft ? 'cornell-col-left' : 'cornell-col-right';
+                let column = wrapper.createDiv({ cls: colClass });
+                
+                // 📏 AQUÍ ESTÁ LA MAGIA DE LA ALTURA: Usamos top:0 y bottom:0 para que se estire
+                column.style.setProperty('position', 'absolute', 'important');
+                column.style.setProperty('top', '0', 'important');
+                column.style.setProperty('bottom', '0', 'important'); 
+                column.style.setProperty('width', 'var(--cornell-width)', 'important');
+
+                if (isNoteLeft) {
+                    column.style.setProperty('left', 'var(--cornell-margin-left)', 'important');
+                } else {
+                    column.style.setProperty('right', 'calc(-1 * var(--cornell-width) - 20px)', 'important');
+                }
+
+                if ((isMainLeft && direction === '<') || (!isMainLeft && direction === '>')) {
+                    marginDiv.classList.add('cornell-reverse-align');
+                }
+
+                // Estiramos también el div interno para que la línea de color cubra todo el espacio
+                marginDiv.style.setProperty('height', '100%', 'important');
+                marginDiv.style.setProperty('min-height', '100%', 'important');
+                marginDiv.style.setProperty('box-sizing', 'border-box', 'important');
+                
+                column.appendChild(marginDiv);
+
+                if (isFlashcard) {
+                    wrapper.classList.add('cornell-flashcard-target');
+                }
+            }
+        });        
         this.registerMarkdownPostProcessor((el, ctx) => {
             if (!this.settings.enableReadingView) return;
             
@@ -6492,105 +6655,209 @@ this.registerEvent(
         let content = editor.getValue();
         let modified = false;
 
-        // Necesitamos saber qué archivo está activo para resolver rutas relativas de imágenes
         const activeFile = this.app.workspace.getActiveFile();
         const sourcePath = activeFile ? activeFile.path : "";
 
-        const lines = content.split('\n');
-        const newLines = lines.map(line => {
-            const regex = /%%([><])(.*?)%%/g;
-            let match;
-            let marginaliasToInject = "";
-            let cleanLine = line;
+        // =========================================================
+        // 1. BLOQUES EDITORIALES (```cornell)
+        // =========================================================
+        const blockRegex = /```cornell\n([\s\S]*?)```/g;
 
-            while ((match = regex.exec(cleanLine)) !== null) {
-                modified = true;
-                const fullMatch = match[0];
-                const direction = match[1];
-                let noteContent = match[2];
+        content = content.replace(blockRegex, (match: string, blockContent: string) => {
+            modified = true;
+            // 🛡️ Guardamos todo el bloque original en la caja fuerte
+            const safeOriginal = btoa(encodeURIComponent(match));
+            const uniqueId = "cornell-block-" + Math.random().toString(36).substring(2, 9);
 
-                let finalText = noteContent.trim();
+            const noteRegex = /%%([><])(.*?)%%/g;
+            let marginaliasHTML = "";
+            let cleanText = blockContent;
+            let firstColor: string | null = null; // Guardará el color para la línea de todo el bloque
+
+            let noteMatch;
+            while ((noteMatch = noteRegex.exec(cleanText)) !== null) {
+                const fullNote = noteMatch[0];
+                const direction = noteMatch[1];
+                let noteText = noteMatch[2].trim();
                 
-                if (finalText.endsWith(';;')) {
-                    finalText = finalText.slice(0, -2).trim();
-                }
+                if (noteText.endsWith(';;')) noteText = noteText.slice(0, -2).trim();
 
                 let matchedColor = 'var(--text-accent)';
                 for (const tag of this.settings.tags) {
-                    if (finalText.startsWith(tag.prefix)) {
+                    if (noteText.startsWith(tag.prefix)) {
                         matchedColor = tag.color;
-                        finalText = finalText.substring(tag.prefix.length).trim();
+                        noteText = noteText.substring(tag.prefix.length).trim();
+                        break;
+                    }
+                }
+
+                if (!firstColor) firstColor = matchedColor; // Capturamos el color principal
+
+                const imgRegex = /img:\s*\[\[(.*?)\]\]/gi;
+                let imgHtml = "";
+                noteText = noteText.replace(imgRegex, (imgMatch: string, imgName: string) => {
+                    const cleanName = imgName.split('|')[0];
+                    const file = this.app.metadataCache.getFirstLinkpathDest(cleanName, sourcePath);
+                    if (file) {
+                        const imgSrc = this.app.vault.getResourcePath(file);
+                        imgHtml += `<img src="${imgSrc}" style="max-width: 100%; border-radius: 4px; margin-top: 5px; display: block;" />`;
+                    }
+                    return '';
+                });
+
+                const compassRegex = /\[(North|South|East|West)::\s*\[\[([\s\S]*?)\]\]\]/gi;
+                noteText = noteText.replace(compassRegex, '').trim();
+                const threadRegex = /(?<!!)\[\[(.*?)\]\]/g;
+                noteText = noteText.replace(threadRegex, '').trim();
+
+                const isMainLeft = this.settings.alignment === 'left';
+                const textAlign = isMainLeft ? 'right' : 'left';
+
+                // Inyectamos la nota. Ya no lleva el borde largo aquí, solo color y texto.
+                marginaliasHTML += `<div style="margin-bottom: 15px; font-size: 0.85em; opacity: 0.9; color: ${matchedColor}; text-align: ${textAlign};">${noteText}${imgHtml}</div>\n`;
+                
+                cleanText = cleanText.replace(fullNote, '');
+                noteRegex.lastIndex = 0;
+            }
+
+            // 🧹 PURIFICADOR: Borramos visualmente los Block IDs de Obsidian (^12345)
+            cleanText = cleanText.replace(/[ \t]*\^[a-zA-Z0-9-]{4,}\s*$/gm, '');
+
+            // 📐 ARQUITECTURA DE COLUMNAS ESTIRADAS (Stretch)
+            const isMainLeft = this.settings.alignment === 'left';
+            const widthVal = `var(--cornell-width, 25%)`;
+            const blockLineColor = firstColor || 'var(--text-accent)';
+            
+            const borderSide = isMainLeft ? 'border-right' : 'border-left';
+            const paddingSide = isMainLeft ? 'padding-right' : 'padding-left';
+            const paddingRightSide = isMainLeft ? 'padding-left' : 'padding-right';
+            
+            // Columna Izquierda: Ahora TOMA el borde y TOMA todo el alto disponible
+            const leftColHtml = `
+<div class="cornell-print-left" style="width: ${widthVal}; flex-shrink: 0; ${borderSide}: 2px solid ${blockLineColor}; ${paddingSide}: 15px; display: flex; flex-direction: column;">
+${marginaliasHTML}
+</div>`;
+            
+            // Columna Derecha: Contiene el markdown
+            const rightColHtml = `
+<div class="cornell-print-right" style="flex-grow: 1; min-width: 0; ${paddingRightSide}: 15px;">\n\n${cleanText.trim()}\n\n</div>`;
+
+            const firstCol = isMainLeft ? leftColHtml : rightColHtml;
+            const secondCol = isMainLeft ? rightColHtml : leftColHtml;
+
+            // 🏗️ ENSAMBLAJE FINAL: align-items: stretch garantiza que la línea baje hasta el final.
+            return `
+<div id="${uniqueId}" class="cornell-print-block" data-original="${safeOriginal}" style="display: flex; flex-direction: row; align-items: stretch; margin-bottom: 2em; page-break-inside: avoid; break-inside: avoid; width: 100%;">
+<style>
+#${uniqueId} .cornell-print-right > p:first-child,
+#${uniqueId} .cornell-print-right > ul:first-child,
+#${uniqueId} .cornell-print-right > ol:first-child,
+#${uniqueId} .cornell-print-right > div:first-child > p:first-child,
+#${uniqueId} .cornell-print-right > div:first-child > ul:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+#${uniqueId} .cornell-print-left > div:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+</style>
+${firstCol}
+${secondCol}
+</div>
+<div class="cornell-block-end" style="display:none;"></div>`.trim();
+        });
+
+        // =========================================================
+        // 2. NOTAS INLINE SUELTAS
+        // =========================================================
+        const docLines = content.split('\n');
+        const finalLines = docLines.map(line => {
+            if (line.includes('cornell-print-block')) return line;
+
+            const inlineRegex = /%%([><])(.*?)%%/g;
+            let match;
+            let marginaliasToInject = "";
+            let cleanLine = line;
+            let lineModified = false;
+
+            while ((match = inlineRegex.exec(cleanLine)) !== null) {
+                modified = true;
+                lineModified = true;
+                const fullMatch = match[0];
+                const direction = match[1];
+                let noteText = match[2].trim();
+
+                // 🛡️ Caja fuerte
+                const safeOriginal = btoa(encodeURIComponent(fullMatch));
+
+                if (noteText.endsWith(';;')) noteText = noteText.slice(0, -2).trim();
+
+                let matchedColor = 'var(--text-accent)';
+                for (const tag of this.settings.tags) {
+                    if (noteText.startsWith(tag.prefix)) {
+                        matchedColor = tag.color;
+                        noteText = noteText.substring(tag.prefix.length).trim();
                         break;
                     }
                 }
 
                 const imgRegex = /img:\s*\[\[(.*?)\]\]/gi;
                 let imgHtml = "";
-                const imgMatches = Array.from(finalText.matchAll(imgRegex)) as RegExpMatchArray[];
-                
-                imgMatches.forEach(m => {
-                    const imgName = m[1].split('|')[0];
-                    const file = this.app.metadataCache.getFirstLinkpathDest(imgName, sourcePath);
+                noteText = noteText.replace(imgRegex, (imgMatch: string, imgName: string) => {
+                    const cleanName = imgName.split('|')[0];
+                    const file = this.app.metadataCache.getFirstLinkpathDest(cleanName, sourcePath);
                     if (file) {
                         const imgSrc = this.app.vault.getResourcePath(file);
                         imgHtml += `<img src="${imgSrc}" style="max-width: 100%; border-radius: 4px; margin-top: 5px; display: block;" />`;
                     }
+                    return '';
                 });
-                
-                finalText = finalText.replace(imgRegex, '').trim(); 
 
-                // 🧭 NUEVO: Cazador de enlaces de brújula (borra el bloque completo [South:: [[...]]])
+                // 🧭 LIMPIEZA DE BRÚJULA E HILOS
                 const compassRegex = /\[(North|South|East|West)::\s*\[\[([\s\S]*?)\]\]\]/gi;
-                finalText = finalText.replace(compassRegex, '').trim();
+                noteText = noteText.replace(compassRegex, '').trim();
+                const threadRegex = /(?<!!)\[\[(.*?)\]\]/g;
+                noteText = noteText.replace(threadRegex, '').trim();
 
-                // 🔗 CAZADOR CLÁSICO: Borrar las conexiones "Thread" normales
-                const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
-                finalText = finalText.replace(linkRegex, '').trim();
-
-                const safeOriginal = encodeURIComponent(fullMatch);
-                
-                // Determinamos de qué lado va el borde según la dirección (> derecha, < izquierda)
-                // Lógica nueva (Corregida)
-                // Si direction es '>', va a la izquierda, por lo que el borde separador va a la derecha.
                 const borderStyle = direction === '>' ? `border-right: 3px solid ${matchedColor};` : `border-left: 3px solid ${matchedColor};`;
-                
-                // Inyectamos el span guardando la direccionalidad (data-direction) y respetando la estructura del regex para restoreFromPrint
-                marginaliasToInject += `<span class="cornell-print-margin" data-original="${safeOriginal}" data-direction="${direction}" style="${borderStyle} color: ${matchedColor};">${finalText}${imgHtml}</span>`;
-                
-                // Removemos la marginalia original de su posición mid-sentence
+
+                marginaliasToInject += `<span class="cornell-print-margin" data-original="${safeOriginal}" data-direction="${direction}" style="${borderStyle} color: ${matchedColor};">${noteText}${imgHtml}</span>`;
+
                 cleanLine = cleanLine.replace(fullMatch, '').trim();
-                // Reiniciamos el índice del regex porque hemos mutado la cadena original
-                regex.lastIndex = 0; 
+                inlineRegex.lastIndex = 0;
             }
 
-            // Si extrajimos marginalias, las inyectamos justo antes del texto limpio
-            return marginaliasToInject.length > 0 ? marginaliasToInject + " " + cleanLine : line;
+            return lineModified ? marginaliasToInject + " " + cleanLine : line;
         });
 
-        const newContent = newLines.join('\n');
+        content = finalLines.join('\n');
 
         if (modified) {
-            editor.setValue(newContent);
-            new Notice("¡Nota preparada para imprimir! Enlaces ocultos e imágenes procesadas.");
+            editor.setValue(content);
+            new Notice("🖨️ PDF Print Mode: Ready! (Press Restore after exporting)");
         } else {
-            new Notice("No se encontraron marginalias para convertir.");
+            new Notice("No marginalias found to prepare.");
         }
     }
-
     async restoreFromPrint(editor: Editor) {
         let content = editor.getValue();
         let modified = false;
 
-        const newContent = content.replace(/<span class="cornell-print-margin" data-original="(.*?)".*?<\/span>/gs, (match, safeOriginal) => {
+        // 🛡️ 1. Restaurar Bloques Editoriales (Regex blindado con baliza del DOM)
+        const blockRegex = /<div[^>]*data-original="([^"]+)"[\s\S]*?<div class="cornell-block-end" style="display:none;"><\/div>/g;
+        
+        content = content.replace(blockRegex, (match: string, b64Data: string) => {
             modified = true;
-            return decodeURIComponent(safeOriginal);
+            return decodeURIComponent(atob(b64Data));
+        });
+
+        // 2. Restaurar Inline sueltas (Regex intacto)
+        const inlineRegex = /<span class="cornell-print-margin"[^>]*data-original="([^"]+)"[^>]*>[\s\S]*?<\/span>/g;
+        content = content.replace(inlineRegex, (match: string, b64Data: string) => {
+            modified = true;
+            return decodeURIComponent(atob(b64Data));
         });
 
         if (modified) {
-            editor.setValue(newContent);
-            new Notice("¡Nota restaurada a formato Markdown original!");
+            editor.setValue(content);
+            new Notice("✅ Marginalia restored to original Markdown!");
         } else {
-            new Notice("No hay marginalias preparadas para restaurar.");
+            new Notice("⚠️ No print blocks found to restore.");
         }
     }
 }

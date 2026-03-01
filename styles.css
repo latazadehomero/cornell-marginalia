@@ -1642,3 +1642,27 @@ body.theme-dark .cornell-pinboard-item img[src*="doodle_"] {
 .cornell-harvest-btn:hover {
     transform: scale(1.1);
 }
+/* ======================================================
+   📏 ESTILOS PARA BLOQUES EDITORIALES (```cornell)
+   ====================================================== */
+
+/* Asegura que la línea roja/de color no se desborde del contenedor principal */
+.cornell-editorial-margin {
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    padding-top: 5px !important;
+    padding-bottom: 5px !important;
+    border-radius: 0 !important; /* Bordes rectos para un look más de revista */
+}
+
+/* Evita que listas muy largas creen un scroll horizontal fantasma */
+.cornell-editorial-content {
+    width: 100%;
+    overflow-wrap: break-word;
+}
+
+/* Evitar que los bloques editoriales se partan a la mitad en el PDF y rompan la línea lateral */
+    .cornell-editorial-wrapper {
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+    }

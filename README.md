@@ -37,12 +37,15 @@ Start your note with a specific symbol to automatically color-code it. Perfect f
 
 > *Note: You can fully customize these prefixes and colors in the settings!*
 
-### 3. 🫥 Grouping Multiple Blocks (The Invisible Callout)
+### 3. 📦 Grouping Multiple Blocks & Perfect Alignment
 
-Obsidian treats paragraphs and lists as completely separate blocks. If you add a margin note to a paragraph that is immediately followed by a list, Obsidian might push the list down in Reading View to avoid overlapping.
+By default, Obsidian treats paragraphs, lists, and images as completely separate blocks. If you add a margin note to a paragraph that is immediately followed by a list, Obsidian might push the list down in Reading View to avoid overlapping.
 
-To fix this and force Obsidian to treat them as a single block, wrap your text in our official invisible callout `> [!cornell]`:
+To fix this and force Obsidian to treat them as a single group, we offer two solutions depending on your needs:
+#### Method A: The Invisible Callout (Lightweight & Organic)
 
+For quick grouping without leaving standard Markdown formatting, wrap your text in our official invisible callout > [!cornell]:
+Markdown
 ```
 > [!cornell]
 > %%> Your margin note here %%
@@ -50,7 +53,30 @@ To fix this and force Obsidian to treat them as a single block, wrap your text i
 > - List item 1
 > - List item 2
 ```
-The plugin will automatically hide the callout background, borders, and title. It will look exactly like normal text, but your margin note will perfectly align alongside the entire group!
+
+The plugin will automatically hide the callout background, borders, and title. It looks exactly like normal text, but your margin note will sit alongside the entire group.
+#### Method B: The Editorial Block (Strict Precision & PDF Safe) ✨ NEW
+
+If you have a highly complex composition (nested lists, images, multiple paragraphs) and need millimeter-perfect alignment, or if you want absolute structural stability when exporting to PDF, use the new cornell fenced block:
+Markdown
+```
+```cornell
+%%> Your perfectly aligned note here %%
+The main text that requires strict alignment goes here.
+- It can contain lists
+- Images, and more!
+```
+
+Under the hood, this creates an isolated "Stretch Flexbox" environment that guarantees your main text and marginalia are perfectly locked together, no matter how much content you put inside. It also survives the PDF Print process flawlessly.
+
+⚡ Frictionless Workflow (No typing required!)
+Knowing that manually typing code blocks breaks your writing flow, we built an automation for this:
+
+    Select any text (or just place your cursor on an empty line).
+
+    Right-click and select "Insert Cornell Block" (or use the Command Palette).
+
+    The plugin will wrap your text, auto-inject the %%>  %% syntax, and place your cursor magically in the center—ready for you to start typing your margin note instantly.
 
 ### 4. 🖼️ Adding Images (Multimedia Support) [NEW]
 

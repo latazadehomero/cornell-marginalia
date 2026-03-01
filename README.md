@@ -39,6 +39,8 @@ Start your note with a specific symbol to automatically color-code it. Perfect f
 
 ### 3. 📦 Grouping Multiple Blocks & Perfect Alignment
 
+⚠️ Note on Visibility: While standard inline marginalia are fully visible in Live Preview (Editing Mode), the advanced grouping methods below rely on Obsidian's markdown rendering engine. Therefore, Callout and Block marginalia will only render and be visible in Reading View.
+
 By default, Obsidian treats paragraphs, lists, and images as completely separate blocks. If you add a margin note to a paragraph that is immediately followed by a list, Obsidian might push the list down in Reading View to avoid overlapping.
 
 To fix this and force Obsidian to treat them as a single group, we offer two solutions depending on your needs:

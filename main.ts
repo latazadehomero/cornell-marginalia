@@ -9,6 +9,7 @@ import { RhizomeAddon, RHIZOME_VIEW_TYPE } from "./addons/RhizomeAddon";
 import { PdfDoodleAddon } from "./addons/PdfDoodleAddon";
 import { SuperDoodleAddon } from "./addons/super-doodle";
 import { BlurtingAddon, BlurtingSetupModal } from "./addons/BlurtingAddon";
+import { MargidoroAddon } from "./addons/margidoro";
 
 // =================================================================
 // 🧠 EL CEREBRO PÚBLICO: OMNI CAPTURE MANAGER
@@ -177,7 +178,9 @@ export interface UserStats {
         lastReviewed: number; // Fecha en milisegundos
         interval: number;     // Días hasta la próxima revisión
         ease: number;         // Factor de facilidad (Algoritmo SM-2 de Anki)
+        
     }>;
+    margidoroPending: string[];
 }
 
 interface CornellSettings {
@@ -203,6 +206,14 @@ interface CornellSettings {
     userStats: UserStats;
     enablePdfDoodle: boolean;
     adaptiveMode: boolean;
+    margidoro: {
+        workTime: number;
+        shortBreak: number;
+        longBreak: number;
+        logFolder: string;
+        hardPrefix: string; // Ej: "?" para auto-clasificar como difícil
+        reviewReminderTime: string; // 👈 NUEVO
+    };
 }
 
 
@@ -263,9 +274,19 @@ const DEFAULT_SETTINGS: CornellSettings = {
         colorUsage: {},
         profileImage: "", quote: "Stay curious.",
         customBackground: "", bgBlur: 5, bgOpacity: 0.8,
-        rhizomeReviews: {}
+        rhizomeReviews: {},
+        margidoroPending: []
     },
     enablePdfDoodle: false,
+    //  VALORES POR DEFECTO MARGIDORO
+    margidoro: {
+        workTime: 25,
+        shortBreak: 5,
+        longBreak: 15,
+        logFolder: "Margidoro Logs",
+        hardPrefix: "?",
+        reviewReminderTime: "20:00", // 👈 NUEVO: Hora por defecto
+    },
 }
 
 
@@ -1637,7 +1658,7 @@ export class CornellNotesView extends ItemView {
         container.style.overflow = "";
 
         container.createEl("h4", { text: "Marginalia Explorer", cls: "cornell-sidebar-title" });
-        this.renderQuickCapture(container as HTMLElement);
+        
 
     
         // --- 🧩 INYECCIÓN DEL ADDON DE GAMIFICACIÓN ---
@@ -3708,241 +3729,119 @@ contextText = contextText.trim();
         const removeTooltip = () => {
             isHovering = false; 
             if (hoverTimeout) clearTimeout(hoverTimeout);
-            
-            // 🧹 SALVAVIDAS: Descargamos el componente de forma segura para liberar a PDF++
-            if (tooltipComponent) {
-                tooltipComponent.unload();
-                tooltipComponent = null;
-            }
-
-            if (tooltipEl) {
-                tooltipEl.remove();
-                tooltipEl = null;
-            }
+            if (tooltipComponent) { tooltipComponent.unload(); tooltipComponent = null; }
+            if (tooltipEl) { tooltipEl.remove(); tooltipEl = null; }
             document.querySelectorAll('.cornell-hover-tooltip').forEach(el => el.remove());
         };
 
-         itemDiv.addEventListener('mouseenter', (e: MouseEvent) => {
-
+        itemDiv.addEventListener('mouseenter', (e: MouseEvent) => {
             isHovering = true;
-
             hoverTimeout = setTimeout(async () => {
-
                 if (!isHovering) return; 
-
                 const content = await this.plugin.app.vault.cachedRead(item.file);
-
-                if (!isHovering) return; 
-
-                if (!document.body.contains(itemDiv)) return;
-
-
+                if (!isHovering || !document.body.contains(itemDiv)) return;
                 const lines = content.split('\n');
 
-// 🧠 EXTRACCIÓN DE BLOQUE INTELIGENTE
-let startLine = item.line;
-let endLine = item.line;
+                let startLine = item.line;
+                let endLine = item.line;
+                while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) startLine--;
+                while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) endLine++;
 
-// Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
-while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
-    startLine--;
-}
-// Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
-while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
-    endLine++;
-}
+                removeTooltip(); 
 
-removeTooltip(); 
-
-// Extraemos todo el texto del bloque
-let rawBlock = '';
-let highlightApplied = false;
-
-for (let i = startLine; i <= endLine; i++) {
-    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
-    
-    // Ignoramos las etiquetas de código para que el tooltip se vea elegante
-    if (cleanLine.startsWith('```')) continue;
-
-    if (cleanLine) {
-        // Magia de resaltado: Si la nota estaba en una línea vacía, resaltará la siguiente línea real de texto
-        if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
-            rawBlock += `==${cleanLine}==\n`; 
-            highlightApplied = true;
-        } else {
-            rawBlock += `${cleanLine}\n`;
-        }
-    }
-}
-
-
-                // 🎯 ESCÁNER DE PDF BLINDADO (Busca en todo el bloque)
-
+                // 🎯 ESCÁNER PDF++ BLINDADO (Quita el alias)
                 const pdfRegex = /!*\[\[(.*?\.(?:pdf).*?)\]\]/i;
+                const mdPdfRegex = /\[.*?\]\((.*?\.(?:pdf).*?)\)/i;
+                let pdfLinkText = null;
 
-                const pdfMatch = rawBlock.match(pdfRegex);
-
-
-                if (pdfMatch) {
-
-                    const pdfLinkText = pdfMatch[1]; 
-
-                    
-
-                    // Disparamos el Popover NATIVO con el source 'preview' para que PDF++ lo intercepte 100%
-
-                    this.plugin.app.workspace.trigger('hover-link', {
-
-                        event: e,
-
-                        source: 'preview', 
-
-                        hoverParent: itemDiv,
-
-                        targetEl: itemDiv,
-
-                        linktext: pdfLinkText,
-
-                        sourcePath: item.file.path
-
-                    });
-
-                    
-
-                    return; // ⛔ Cortamos acá si es PDF
-
+                let match = lines[item.line].match(pdfRegex) || lines[item.line].match(mdPdfRegex);
+                if (match) pdfLinkText = match[1];
+                if (!pdfLinkText && item.line - 1 >= startLine) {
+                    match = lines[item.line - 1].match(pdfRegex) || lines[item.line - 1].match(mdPdfRegex);
+                    if (match) pdfLinkText = match[1];
+                }
+                if (!pdfLinkText && item.line + 1 <= endLine) {
+                    match = lines[item.line + 1].match(pdfRegex) || lines[item.line + 1].match(mdPdfRegex);
+                    if (match) pdfLinkText = match[1];
                 }
 
+                if (pdfLinkText) {
+                    const cleanLinkText = pdfLinkText.split('|')[0].trim(); // 🛡️ CRÍTICO: Quitar alias
+                    this.plugin.app.workspace.trigger("hover-link", {
+                        event: e, source: "preview", hoverParent: itemDiv,
+                        targetEl: itemDiv, linktext: cleanLinkText, sourcePath: item.file.path
+                    });
+                    return;
+                }
 
-                // 🧱 JAULA DE TITANIO (Si NO es un PDF)
+                let rawBlock = '';
+                let highlightApplied = false;
+                for (let i = startLine; i <= endLine; i++) {
+                    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                    if (cleanLine.startsWith('```')) continue;
+                    if (cleanLine) {
+                        if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
+                            rawBlock += `==${cleanLine}==\n`; highlightApplied = true;
+                        } else rawBlock += `${cleanLine}\n`;
+                    }
+                }
 
                 tooltipEl = document.createElement('div');
-
                 tooltipEl.className = 'popover hover-popover cornell-hover-tooltip markdown-rendered markdown-preview-view'; 
-
-                
-
-                // 🎨 ARREGLO DE DISPOSICIÓN Y CSS
-
                 tooltipEl.style.position = 'fixed'; 
-
                 tooltipEl.style.zIndex = '99999';
-
                 tooltipEl.style.width = '450px'; 
-
                 tooltipEl.style.maxHeight = '350px'; 
-
                 tooltipEl.style.overflowY = 'auto'; 
-
                 tooltipEl.style.backgroundColor = 'var(--background-primary)';
-
                 tooltipEl.style.border = '1px solid var(--background-modifier-border)';
-
                 tooltipEl.style.boxShadow = '0 10px 20px rgba(0,0,0,0.3)';
-
                 tooltipEl.style.borderRadius = '8px';
-
                 tooltipEl.style.padding = '12px';
-
-                tooltipEl.style.display = 'flex'; // Fuerza el diseño de caja flexible
-
-                tooltipEl.style.flexDirection = 'column'; // Apila título arriba y cuerpo abajo
-
-                tooltipEl.style.gap = '8px'; // Espacio entre título y contenido
-
+                tooltipEl.style.display = 'flex'; 
+                tooltipEl.style.flexDirection = 'column'; 
+                tooltipEl.style.gap = '8px'; 
 
                 const styleTag = document.createElement('style');
-
-                styleTag.innerHTML = `
-
-                    .cornell-hover-tooltip p { margin: 0 0 8px 0 !important; }
-
-                `;
-
+                styleTag.innerHTML = `.cornell-hover-tooltip p { margin: 0 0 8px 0 !important; }`;
                 tooltipEl.appendChild(styleTag);
-
                 
-
                 const header = tooltipEl.createDiv({ cls: 'cornell-hover-context' });
-
-                // Letra más grande, en negrita y bloque completo
-
                 header.innerHTML = `<span style="font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;">📄 ${item.file.basename} (L${item.line + 1})</span>`;
-
                 
-
                 const body = tooltipEl.createDiv();
-
-                body.style.width = '100%'; // Asegura que el cuerpo ocupe todo el ancho disponible
-
-
+                body.style.width = '100%'; 
                 document.body.appendChild(tooltipEl);
 
-
-                // POSICIONAMIENTO
-
                 const rect = itemDiv.getBoundingClientRect();
-
-                let leftPos = rect.left - 470; 
-
-                if (leftPos < 10) leftPos = rect.right + 20; 
-
+                let leftPos = rect.right + 20; 
+                if (leftPos + 450 > window.innerWidth) leftPos = rect.left - 470; 
+                if (leftPos < 10) leftPos = 10; 
                 tooltipEl.style.left = `${leftPos}px`;
-
                 
-
                 let topPos = rect.top;
-
                 if (topPos + 350 > window.innerHeight) topPos = window.innerHeight - 360;
-
                 tooltipEl.style.top = `${Math.max(10, topPos)}px`;
 
-
-                // BALA DE PLATA para imágenes nativas
-
-                const imgRegex = /!\[\[(.*?\.(?:png|jpg|jpeg|gif|bmp|svg))\|?(.*?)\]\]/gi;
-
-                rawBlock = rawBlock.replace(imgRegex, (match, filename) => {
-
+                const inlineImgRegex = /!\[\[(.*?\.(?:png|jpg|jpeg|gif|bmp|svg))\|?(.*?)\]\]/gi;
+                rawBlock = rawBlock.replace(inlineImgRegex, (match2, filename) => {
                     const file = this.plugin.app.metadataCache.getFirstLinkpathDest(filename.trim(), item.file.path);
-
                     if (file) {
-
                         const resourcePath = this.plugin.app.vault.getResourcePath(file);
-
                         return `<img src="${resourcePath}" style="max-height:220px; max-width:100%; border-radius:6px; display:block; margin:8px auto;">`;
-
                     }
-
-                    return match; 
-
+                    return match2; 
                 });
-
 
                 if (!rawBlock.trim()) rawBlock = "*No text context available.*";
 
-
-                await MarkdownRenderer.renderMarkdown(
-
-                    rawBlock, 
-
-                    body, 
-
-                    item.file.path, 
-
-                    this 
-
-                );
-
+                // @ts-ignore
+                await MarkdownRenderer.renderMarkdown(rawBlock, body, item.file.path, this);
 
                 requestAnimationFrame(() => {
-
                     if (tooltipEl) tooltipEl.addClass('is-visible');
-
                 });
-
             }, 500); 
-
         }); 
 
         itemDiv.addEventListener('mouseleave', removeTooltip);
@@ -4546,9 +4445,57 @@ export class CornellSettingTab extends PluginSettingTab {
                         if (leaf.view instanceof CornellNotesView) leaf.view.renderUI();
                     });
                 })
+    
             );
-    }
+            // --- ADDON: MARGIDORO (POMODORO) ---
+        new Setting(containerEl)
+            .setName("🍅 Margidoro Engine")
+            .setDesc("Knowledge-aware Pomodoro timer. Tracks your marginalias during study sessions and schedules reviews.")
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.addons["margidoro"] || false)
+                .onChange(async (value) => {
+                    this.plugin.settings.addons["margidoro"] = value;
+                    await this.plugin.saveSettings();
+
+                    if (value) {
+                        this.plugin.margidoroAddon.load();
+                        new Notice("🍅 Margidoro Enabled! Check the bottom status bar.");
+                    } else {
+                        this.plugin.margidoroAddon.unload();
+                        new Notice("🛑 Margidoro Disabled.");
+                    }
+                    this.display();
+                })
+            );
+
+        if (this.plugin.settings.addons["margidoro"]) {
+            new Setting(containerEl)
+                .setName('Work Duration (min)')
+                .addSlider(s => s.setLimits(5, 60, 5).setValue(this.plugin.settings.margidoro.workTime).setDynamicTooltip()
+                    .onChange(async (v) => { this.plugin.settings.margidoro.workTime = v; await this.plugin.saveSettings(); }));
+            
+            new Setting(containerEl)
+                .setName('Hard Marginalia Auto-Tag')
+                .setDesc('Prefix (like ? or X-) that automatically marks a note as HARD during the session review.')
+                .addText(t => t.setValue(this.plugin.settings.margidoro.hardPrefix)
+                    .onChange(async (v) => { this.plugin.settings.margidoro.hardPrefix = v; await this.plugin.saveSettings(); }));
+            
+            new Setting(containerEl)
+                .setName('Session Logs Folder')
+                .setDesc('Where your daily Pomodoro summaries will be saved. ⚠️ TIP: Add this folder name to "Ignored Folders" above to prevent duplicating notes in your Explorer.')
+                .addText(t => t.setValue(this.plugin.settings.margidoro.logFolder)
+                    .onChange(async (v) => { this.plugin.settings.margidoro.logFolder = v; await this.plugin.saveSettings(); }));
+            new Setting(containerEl)
+                .setName('🔔 Daily Review Reminder')
+                .setDesc('Time (HH:mm) to remind you to review your pending Hard Marginalias. Example: 20:00')
+                .addText(t => t.setValue(this.plugin.settings.margidoro.reviewReminderTime)
+                    .onChange(async (v) => { this.plugin.settings.margidoro.reviewReminderTime = v; await this.plugin.saveSettings(); }));
+        }
+        }
+
+        
 }
+
 
 
 
@@ -4558,6 +4505,7 @@ export class CornellSettingTab extends PluginSettingTab {
 export class RhizomeView extends ItemView {
     plugin: CornellMarginalia;
     isReviewMode: boolean = false; 
+    isMargidoroMode: boolean = false;
     isStitchingMode: boolean = false;
     isMoleculeMode: boolean = false;
     hideOrphans: boolean = false; // 👻 Controla si ocultamos las notas sin conexiones
@@ -4590,7 +4538,7 @@ export class RhizomeView extends ItemView {
         
         // 🛡️ PARCHE DE MEMORIA
         if (!this.plugin.settings.userStats) {
-            this.plugin.settings.userStats = { xp: 0, level: 1, marginaliasCreated: 0, colorUsage: {}, profileImage: "", quote: "Stay curious.", customBackground: "", bgBlur: 5, bgOpacity: 0.8, rhizomeReviews: {} };
+            this.plugin.settings.userStats = { xp: 0, level: 1, marginaliasCreated: 0, colorUsage: {}, profileImage: "", quote: "Stay curious.", customBackground: "", bgBlur: 5, bgOpacity: 0.8, rhizomeReviews: {}, margidoroPending: [] };
         }
         if (!this.plugin.settings.userStats.rhizomeReviews) {
             this.plugin.settings.userStats.rhizomeReviews = {};
@@ -4848,12 +4796,17 @@ export class RhizomeView extends ItemView {
         const activeColors = this.activeColorFilters;
 
         for (const date in this.cachedTimelineData) {
-            const filteredNodes = this.cachedTimelineData[date].filter(item => {
-                const matchesSearch = item.text.toLowerCase().includes(searchLower) || item.file.basename.toLowerCase().includes(searchLower);
-                const matchesColor = activeColors.size === 0 || activeColors.has(item.color);
-                const matchesFc = !onlyFc || item.isFlashcard;
-                return matchesSearch && matchesColor && matchesFc;
-            });
+      const filteredNodes = this.cachedTimelineData[date].filter((item) => {
+        const matchesSearch = item.text.toLowerCase().includes(searchLower) || item.file.basename.toLowerCase().includes(searchLower);
+        const matchesColor = activeColors.size === 0 || activeColors.has(item.color);
+        const matchesFc = !onlyFc || item.isFlashcard;
+        
+        // 🍅 FILTRO MARGIDORO (Oculta las notas que no están pendientes)
+        const isPending = this.plugin.settings.userStats.margidoroPending?.includes(item.id);
+        const matchesMargidoro = !this.isMargidoroMode || isPending;
+
+        return matchesSearch && matchesColor && matchesFc && matchesMargidoro;
+      });
             if (filteredNodes.length > 0) {
                 timelineData[date] = filteredNodes;
             }
@@ -4871,6 +4824,16 @@ export class RhizomeView extends ItemView {
         });
         reviewBtn.onclick = () => {
             this.isReviewMode = !this.isReviewMode;
+            this.renderTimeline(); 
+        };
+        const margidoroBtn = zoomControls.createEl('button', { 
+            text: this.isMargidoroMode ? '🍅 Focus: Pending' : '🍅 Pomodoro Review',
+            cls: this.isMargidoroMode ? 'is-reviewing' : '' 
+        });
+        margidoroBtn.style.marginLeft = '10px';
+        margidoroBtn.onclick = () => {
+            this.isMargidoroMode = !this.isMargidoroMode;
+            if (this.isMargidoroMode) this.isReviewMode = false; // Se apagan entre sí
             this.renderTimeline(); 
         };
 
@@ -5062,6 +5025,32 @@ export class RhizomeView extends ItemView {
 
                 // 🛠️ BOTONERA DE ACCIONES (Foco, Cosido y Zoom)
                 const actionsDiv = node.createDiv({ cls: 'cornell-rhizome-actions' });
+
+                // 🍅 BOTÓN MASTERED (Solo aparece si estamos en Pomodoro Review)
+                if (this.isMargidoroMode && this.plugin.settings.userStats.margidoroPending?.includes(item.id)) {
+                    const resolveBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
+                    setIcon(resolveBtn, 'check-circle');
+                    resolveBtn.title = "Mark as Mastered";
+                    resolveBtn.style.background = 'var(--color-green)';
+                    resolveBtn.style.color = 'white';
+                    resolveBtn.style.padding = '4px';
+                    resolveBtn.style.borderRadius = '4px';
+                    resolveBtn.style.cursor = 'pointer';
+                    // Empujamos este botón un poco a la izquierda para que no choque con los demás
+                    resolveBtn.style.marginRight = '5px'; 
+
+                    resolveBtn.onClickEvent(async (ev) => {
+                        ev.stopPropagation(); 
+                        this.plugin.settings.userStats.margidoroPending = this.plugin.settings.userStats.margidoroPending.filter((id: string) => id !== item.id);
+                        await this.plugin.saveSettings();
+                        
+                        node.style.transition = 'all 0.3s ease';
+                        node.style.transform = 'scale(0.8)';
+                        node.style.opacity = '0';
+                        setTimeout(() => this.renderTimeline(), 300);
+                        new Notice("✅ Topic Mastered!");
+                    });
+                }
                 
                 // 1. Botón de Cosido
                 const stitchBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
@@ -5136,58 +5125,55 @@ export class RhizomeView extends ItemView {
                 };
 
                 node.addEventListener('mouseenter', (e: MouseEvent) => {
+                    
                     isHovering = true;
                     hoverTimeout = setTimeout(async () => {
                         if (!isHovering) return; 
                         const content = await this.plugin.app.vault.cachedRead(item.file);
                         if (!isHovering || !document.body.contains(node)) return;
-
                         const lines = content.split('\n');
 
-// 🧠 EXTRACCIÓN DE BLOQUE INTELIGENTE
-let startLine = item.line;
-let endLine = item.line;
+                        let startLine = item.line;
+                        let endLine = item.line;
+                        while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) startLine--;
+                        while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) endLine++;
 
-// Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
-while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
-    startLine--;
-}
-// Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
-while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
-    endLine++;
-}
-
-removeTooltip(); 
-
-// Extraemos todo el texto del bloque
-let rawBlock = '';
-let highlightApplied = false;
-
-for (let i = startLine; i <= endLine; i++) {
-    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
-    
-    // Ignoramos las etiquetas de código para que el tooltip se vea elegante
-    if (cleanLine.startsWith('```')) continue;
-
-    if (cleanLine) {
-        // Magia de resaltado: Si la nota estaba en una línea vacía, resaltará la siguiente línea real de texto
-        if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
-            rawBlock += `==${cleanLine}==\n`; 
-            highlightApplied = true;
-        } else {
-            rawBlock += `${cleanLine}\n`;
-        }
-    }
-}
+                        removeTooltip(); 
 
                         const pdfRegex = /!*\[\[(.*?\.(?:pdf).*?)\]\]/i;
-                        const pdfMatch = rawBlock.match(pdfRegex);
-                        if (pdfMatch) {
-                            this.plugin.app.workspace.trigger('hover-link', {
-                                event: e, source: 'preview', hoverParent: node,
-                                targetEl: node, linktext: pdfMatch[1], sourcePath: item.file.path
+                        const mdPdfRegex = /\[.*?\]\((.*?\.(?:pdf).*?)\)/i;
+                        let pdfLinkText = null;
+
+                        let match = lines[item.line].match(pdfRegex) || lines[item.line].match(mdPdfRegex);
+                        if (match) pdfLinkText = match[1];
+                        if (!pdfLinkText && item.line - 1 >= startLine) {
+                            match = lines[item.line - 1].match(pdfRegex) || lines[item.line - 1].match(mdPdfRegex);
+                            if (match) pdfLinkText = match[1];
+                        }
+                        if (!pdfLinkText && item.line + 1 <= endLine) {
+                            match = lines[item.line + 1].match(pdfRegex) || lines[item.line + 1].match(mdPdfRegex);
+                            if (match) pdfLinkText = match[1];
+                        }
+
+                        if (pdfLinkText) {
+                            const cleanLinkText = pdfLinkText.split('|')[0].trim(); // 🛡️ CRÍTICO: Quitar alias
+                            this.plugin.app.workspace.trigger("hover-link", {
+                                event: e, source: "preview", hoverParent: node,
+                                targetEl: node, linktext: cleanLinkText, sourcePath: item.file.path
                             });
-                            return; 
+                            return;
+                        }
+
+                        let rawBlock = '';
+                        let highlightApplied = false;
+                        for (let i = startLine; i <= endLine; i++) {
+                            let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                            if (cleanLine.startsWith('```')) continue;
+                            if (cleanLine) {
+                                if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
+                                    rawBlock += `==${cleanLine}==\n`; highlightApplied = true;
+                                } else rawBlock += `${cleanLine}\n`;
+                            }
                         }
 
                         tooltipEl = document.createElement('div');
@@ -5206,17 +5192,21 @@ for (let i = startLine; i <= endLine; i++) {
                         tooltipEl.style.flexDirection = 'column'; 
                         tooltipEl.style.gap = '8px'; 
 
+                        const styleTag = document.createElement('style');
+                        styleTag.innerHTML = `.cornell-hover-tooltip p { margin: 0 0 8px 0 !important; }`;
+                        tooltipEl.appendChild(styleTag);
+                        
                         const header = tooltipEl.createDiv({ cls: 'cornell-hover-context' });
                         header.innerHTML = `<span style="font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;">📄 ${item.file.basename} (L${item.line + 1})</span>`;
+                        
                         const body = tooltipEl.createDiv();
                         body.style.width = '100%'; 
-
                         document.body.appendChild(tooltipEl);
 
                         const rect = node.getBoundingClientRect();
                         let leftPos = rect.right + 20; 
                         if (leftPos + 450 > window.innerWidth) leftPos = rect.left - 470; 
-                        if (leftPos < 10) leftPos = 10;
+                        if (leftPos < 10) leftPos = 10; 
                         tooltipEl.style.left = `${leftPos}px`;
                         
                         let topPos = rect.top;
@@ -5224,17 +5214,17 @@ for (let i = startLine; i <= endLine; i++) {
                         tooltipEl.style.top = `${Math.max(10, topPos)}px`;
 
                         const inlineImgRegex = /!\[\[(.*?\.(?:png|jpg|jpeg|gif|bmp|svg))\|?(.*?)\]\]/gi;
-                        rawBlock = rawBlock.replace(inlineImgRegex, (match, filename) => {
+                        rawBlock = rawBlock.replace(inlineImgRegex, (match2, filename) => {
                             const file = this.plugin.app.metadataCache.getFirstLinkpathDest(filename.trim(), item.file.path);
                             if (file) {
                                 const resourcePath = this.plugin.app.vault.getResourcePath(file);
                                 return `<img src="${resourcePath}" style="max-height:220px; max-width:100%; border-radius:6px; display:block; margin:8px auto;">`;
                             }
-                            return match; 
+                            return match2; 
                         });
 
                         if (!rawBlock.trim()) rawBlock = "*No text context available.*";
-                        
+
                         // @ts-ignore
                         await MarkdownRenderer.renderMarkdown(rawBlock, body, item.file.path, this);
 
@@ -5337,6 +5327,18 @@ for (let i = startLine; i <= endLine; i++) {
 
         const zoomControls = canvas.createDiv({ cls: 'cornell-rhizome-zoom-controls' });
         zoomControls.style.zIndex = '1000'; 
+        
+        // 🍅 BOTÓN MARGIDORO
+        const margidoroBtn = zoomControls.createEl('button', { 
+            text: this.isMargidoroMode ? '🍅 Focus: Pending' : '🍅 Pomodoro Review',
+            cls: this.isMargidoroMode ? 'is-reviewing' : '' 
+        });
+        margidoroBtn.style.marginRight = '10px';
+        margidoroBtn.onclick = () => {
+            this.isMargidoroMode = !this.isMargidoroMode;
+            this.renderTimeline(); 
+        };
+
         const zoomOutBtn = zoomControls.createEl('button', { text: '-' });
         const zoomResetBtn = zoomControls.createEl('button', { text: '100%' });
         const zoomInBtn = zoomControls.createEl('button', { text: '+' });
@@ -5520,7 +5522,11 @@ for (let i = startLine; i <= endLine; i++) {
             // 🎯 NUEVO FILTRO: Si hay un foco activo, DEBE pertenecer a esa familia
             const matchesCluster = !this.focusedClusterId || clusterIds.has(item.id);
             
-            return matchesSearch && matchesColor && matchesOrphan && matchesCluster;
+            // 🍅 FILTRO MARGIDORO
+            const isPending = this.plugin.settings.userStats.margidoroPending?.includes(item.id);
+            const matchesMargidoro = !this.isMargidoroMode || isPending;
+            
+            return matchesSearch && matchesColor && matchesOrphan && matchesCluster && matchesMargidoro;
         });
 
         
@@ -5634,6 +5640,31 @@ for (let i = startLine; i <= endLine; i++) {
             actionsDiv.style.gap = '6px'; // Separación perfecta entre los botones
             actionsDiv.style.zIndex = '10';
 
+            // 🍅 BOTÓN MASTERED (Solo aparece si estamos en Pomodoro Review)
+            if (this.isMargidoroMode && this.plugin.settings.userStats.margidoroPending?.includes(item.id)) {
+                const resolveBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
+                setIcon(resolveBtn, 'check-circle');
+                resolveBtn.title = "Mark as Mastered";
+                resolveBtn.style.background = 'var(--color-green)';
+                resolveBtn.style.color = 'white';
+                resolveBtn.style.padding = '4px';
+                resolveBtn.style.borderRadius = '4px';
+                resolveBtn.style.cursor = 'pointer';
+
+                resolveBtn.onClickEvent(async (ev) => {
+                    ev.stopPropagation(); 
+                    // Sacamos el ID de la lista de pendientes y guardamos
+                    this.plugin.settings.userStats.margidoroPending = this.plugin.settings.userStats.margidoroPending.filter((id: string) => id !== item.id);
+                    await this.plugin.saveSettings();
+                    
+                    // Efecto visual y recarga
+                    node.style.transform = 'scale(0.8)';
+                    node.style.opacity = '0';
+                    setTimeout(() => this.renderTimeline(), 250);
+                    new Notice("✅ Topic Mastered!");
+                });
+            }
+
             // 1. Botón de Focus (Clúster Molecular) -> Presente en TODAS
             const focusBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
             setIcon(focusBtn, 'focus');
@@ -5662,8 +5693,7 @@ for (let i = startLine; i <= endLine; i++) {
                 ev.stopPropagation(); 
                 this.handleStitchClick(item, node, canvas);
             });
-
-            // 3. Botón de Zoom (Fullscreen) -> Presente SOLO si hay imágenes
+            
             if (imagesToRender.length > 0) {
                 const zoomBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
                 setIcon(zoomBtn, 'maximize');
@@ -5746,105 +5776,114 @@ for (let i = startLine; i <= endLine; i++) {
             };
 
             node.addEventListener('mouseenter', (e: MouseEvent) => {
-                if (wasDragged) return; // No mostrar tooltip si estamos arrastrando a toda velocidad
+                if (wasDragged) return; // 👈 Aquí SÍ va esto porque estamos en 3D
                 isHovering = true;
                 hoverTimeout = setTimeout(async () => {
-                    if (!isHovering) return; 
+                    if (!isHovering) return;
                     const content = await this.plugin.app.vault.cachedRead(item.file);
                     if (!isHovering || !document.body.contains(node)) return;
-
                     const lines = content.split('\n');
 
-// 🧠 EXTRACCIÓN DE BLOQUE INTELIGENTE
-let startLine = item.line;
-let endLine = item.line;
+                    let startLine = item.line;
+                    let endLine = item.line;
+                    while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) startLine--;
+                    while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) endLine++;
 
-// Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
-while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
-    startLine--;
-}
-// Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
-while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
-    endLine++;
-}
+                    removeTooltip();
 
-removeTooltip(); 
+                    const pdfRegex = /!*\[\[(.*?\.(?:pdf).*?)\]\]/i;
+                    const mdPdfRegex = /\[.*?\]\((.*?\.(?:pdf).*?)\)/i;
+                    let pdfLinkText = null;
 
-// Extraemos todo el texto del bloque
-let rawBlock = '';
-let highlightApplied = false;
+                    let match = lines[item.line].match(pdfRegex) || lines[item.line].match(mdPdfRegex);
+                    if (match) pdfLinkText = match[1];
+                    if (!pdfLinkText && item.line - 1 >= startLine) {
+                        match = lines[item.line - 1].match(pdfRegex) || lines[item.line - 1].match(mdPdfRegex);
+                        if (match) pdfLinkText = match[1];
+                    }
+                    if (!pdfLinkText && item.line + 1 <= endLine) {
+                        match = lines[item.line + 1].match(pdfRegex) || lines[item.line + 1].match(mdPdfRegex);
+                        if (match) pdfLinkText = match[1];
+                    }
 
-for (let i = startLine; i <= endLine; i++) {
-    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
-    
-    // Ignoramos las etiquetas de código para que el tooltip se vea elegante
-    if (cleanLine.startsWith('```')) continue;
+                    if (pdfLinkText) {
+                        const cleanLinkText = pdfLinkText.split('|')[0].trim();
+                        this.plugin.app.workspace.trigger("hover-link", {
+                            event: e, source: "preview", hoverParent: node,
+                            targetEl: node, linktext: cleanLinkText, sourcePath: item.file.path
+                        });
+                        return;
+                    }
 
-    if (cleanLine) {
-        // Magia de resaltado: Si la nota estaba en una línea vacía, resaltará la siguiente línea real de texto
-        if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
-            rawBlock += `==${cleanLine}==\n`; 
-            highlightApplied = true;
-        } else {
-            rawBlock += `${cleanLine}\n`;
-        }
-    }
-}
+                    let rawBlock = '';
+                    let highlightApplied = false;
+                    for (let i = startLine; i <= endLine; i++) {
+                        let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                        if (cleanLine.startsWith('```')) continue;
+                        if (cleanLine) {
+                            if ((i === item.line || (i >= item.line && !highlightApplied)) && !highlightApplied) {
+                                rawBlock += `==${cleanLine}==\n`; highlightApplied = true;
+                            } else rawBlock += `${cleanLine}\n`;
+                        }
+                    }
 
                     tooltipEl = document.createElement('div');
-                    tooltipEl.className = 'popover hover-popover cornell-hover-tooltip markdown-rendered markdown-preview-view'; 
-                    tooltipEl.style.position = 'fixed'; 
+                    tooltipEl.className = 'popover hover-popover cornell-hover-tooltip markdown-rendered markdown-preview-view';
+                    tooltipEl.style.position = 'fixed';
                     tooltipEl.style.zIndex = '99999';
-                    tooltipEl.style.width = '450px'; 
-                    tooltipEl.style.maxHeight = '350px'; 
-                    tooltipEl.style.overflowY = 'auto'; 
+                    tooltipEl.style.width = '450px';
+                    tooltipEl.style.maxHeight = '350px';
+                    tooltipEl.style.overflowY = 'auto';
                     tooltipEl.style.backgroundColor = 'var(--background-primary)';
                     tooltipEl.style.border = '1px solid var(--background-modifier-border)';
                     tooltipEl.style.boxShadow = '0 10px 20px rgba(0,0,0,0.3)';
                     tooltipEl.style.borderRadius = '8px';
                     tooltipEl.style.padding = '12px';
-                    tooltipEl.style.display = 'flex'; 
-                    tooltipEl.style.flexDirection = 'column'; 
-                    tooltipEl.style.gap = '8px'; 
+                    tooltipEl.style.display = 'flex';
+                    tooltipEl.style.flexDirection = 'column';
+                    tooltipEl.style.gap = '8px';
+
+                    const styleTag = document.createElement('style');
+                    styleTag.innerHTML = `.cornell-hover-tooltip p { margin: 0 0 8px 0 !important; }`;
+                    tooltipEl.appendChild(styleTag);
 
                     const header = tooltipEl.createDiv({ cls: 'cornell-hover-context' });
                     header.innerHTML = `<span style="font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;">📄 ${item.file.basename} (L${item.line + 1})</span>`;
-                    
-                    const body = tooltipEl.createDiv();
-                    body.style.width = '100%'; 
 
+                    const body = tooltipEl.createDiv();
+                    body.style.width = '100%';
                     document.body.appendChild(tooltipEl);
 
                     const rect = node.getBoundingClientRect();
-                    let leftPos = rect.right + 20; 
-                    if (leftPos + 450 > window.innerWidth) leftPos = rect.left - 470; 
+                    let leftPos = rect.right + 20;
+                    if (leftPos + 450 > window.innerWidth) leftPos = rect.left - 470;
                     if (leftPos < 10) leftPos = 10;
                     tooltipEl.style.left = `${leftPos}px`;
-                    
+
                     let topPos = rect.top;
                     if (topPos + 350 > window.innerHeight) topPos = window.innerHeight - 360;
                     tooltipEl.style.top = `${Math.max(10, topPos)}px`;
 
                     const inlineImgRegex = /!\[\[(.*?\.(?:png|jpg|jpeg|gif|bmp|svg))\|?(.*?)\]\]/gi;
-                    rawBlock = rawBlock.replace(inlineImgRegex, (match, filename) => {
+                    rawBlock = rawBlock.replace(inlineImgRegex, (match2, filename) => {
                         const file = this.plugin.app.metadataCache.getFirstLinkpathDest(filename.trim(), item.file.path);
                         if (file) {
                             const resourcePath = this.plugin.app.vault.getResourcePath(file);
                             return `<img src="${resourcePath}" style="max-height:220px; max-width:100%; border-radius:6px; display:block; margin:8px auto;">`;
                         }
-                        return match; 
+                        return match2;
                     });
 
                     if (!rawBlock.trim()) rawBlock = "*No text context available.*";
-                    
+
                     // @ts-ignore
                     await MarkdownRenderer.renderMarkdown(rawBlock, body, item.file.path, this);
 
                     requestAnimationFrame(() => {
                         if (tooltipEl) tooltipEl.addClass('is-visible');
                     });
-                }, 500); 
-            }); 
+                }, 500);
+            });
 
             node.addEventListener('mouseleave', removeTooltip);
 
@@ -6277,6 +6316,7 @@ export default class CornellMarginalia extends Plugin {
     // SUPER DOODLEEEEEEEEEEEEEEEEEEE
     public superDoodleAddon!: SuperDoodleAddon;
     public blurtingAddon!: BlurtingAddon;
+    public margidoroAddon!: MargidoroAddon;
    
     // 📁 MOTOR DE CREACIÓN DE CARPETAS
     async ensureFolderExists(folderPath: string) {
@@ -6336,6 +6376,12 @@ export default class CornellMarginalia extends Plugin {
         this.blurtingAddon = new BlurtingAddon(this);
         if (this.settings.addons && this.settings.addons[this.blurtingAddon.id]) {
             this.blurtingAddon.load();
+        }
+
+        // 🍅 MARGIDORO
+        this.margidoroAddon = new MargidoroAddon(this);
+        if (this.settings.addons && this.settings.addons["margidoro"]) {
+            this.margidoroAddon.load();
         }
         // 👆 FIN DE LA CONEXIÓN DE ADDONS
 

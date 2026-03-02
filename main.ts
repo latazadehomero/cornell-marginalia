@@ -202,6 +202,8 @@ interface CornellSettings {
     canvasFolder: string;
     pinboardFolder: string;
     omniCaptureFolder: string;
+    responsiveMarginalia: boolean;
+    responsiveThreshold: number;
     addons: Record<string, boolean>; 
     userStats: UserStats;
     enablePdfDoodle: boolean;
@@ -260,6 +262,8 @@ const DEFAULT_SETTINGS: CornellSettings = {
     canvasFolder: 'Evidence Boards',
     pinboardFolder: 'Pinboards',
     omniCaptureFolder: '',
+    responsiveMarginalia: false,
+    responsiveThreshold: 850,
     // 👇 LOS VALORES POR DEFECTO PARA LOS NUEVOS USUARIOS
     addons: {
         "gamification-profile": false, // Por defecto viene apagado
@@ -3996,6 +4000,30 @@ export class CornellSettingTab extends PluginSettingTab {
         // ======================================================
         containerEl.createEl('h3', { text: '🎨 Appearance & Rendering' });
 
+        // 👇 margenes resposivos
+        new Setting(containerEl)
+            .setName('Responsive Marginalia (Auto-Collapse)')
+            .setDesc('OPTIONAL: Automatically move marginalia inside the text when the note pane is too narrow (e.g. when you open the sidebar).')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.responsiveMarginalia)
+                .onChange(async (value) => {
+                    this.plugin.settings.responsiveMarginalia = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.updateStyles(); // 👈 Refresca el CSS al instante
+                }));
+        new Setting(containerEl)
+            .setName('Responsive Threshold (px)')
+            .setDesc('Set the width at which marginalia collapses into the text. (Requires Auto-Collapse to be ON).')
+            .addSlider(slider => slider
+                .setLimits(400, 1200, 10) // Mínimo 400, Máximo 1200, saltos de 10px
+                .setValue(this.plugin.settings.responsiveThreshold)
+                .setDynamicTooltip() // Muestra un globito con el valor exacto al deslizar
+                .onChange(async (value) => {
+                    this.plugin.settings.responsiveThreshold = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.updateStyles(); // Refresca el CSS en vivo
+                }));
+
         new Setting(containerEl)
             .setName('Adaptive Width (Theme Compatibility)')
             .setDesc('🧠 Auto-calculates margin width based on empty screen space. Turn ON if you are having problems with your current  theme to prevent overlap.')
@@ -7197,23 +7225,17 @@ this.registerEvent(
 
         if (this.settings.adaptiveMode) {
             // Lógica SAAM: 
-            // 1. 100vw (ancho total) menos var(--file-line-width) (ancho del texto central).
-            // 2. Lo dividimos entre 2 para obtener el espacio libre de un solo lado.
-            // 3. Le restamos 40px como margen de respiración.
-            // 4. Usamos clamp() para que la nota nunca sea menor a 150px ni mayor a 400px.
             widthValue = `clamp(150px, calc((100vw - var(--file-line-width, 700px)) / 2 - 40px), 400px)`;
         }
 
         // Inyectamos el valor ganador en el CSS
         document.body.style.setProperty('--cornell-width', widthValue);
         
-        // ... (El resto de tu función queda exactamente igual) ...
         document.body.style.setProperty('--cornell-font-size', this.settings.fontSize);
         document.body.style.setProperty('--cornell-font-family', this.settings.fontFamily);
         
         if (this.settings.alignment === 'left') {
             document.body.style.setProperty('--cornell-float', 'left');
-            // Como widthValue ahora puede ser una fórmula, calc() lo resolverá perfectamente
             document.body.style.setProperty('--cornell-margin-left', `calc(-1 * var(--cornell-width) - 20px)`);
             document.body.style.setProperty('--cornell-margin-right', '15px');
             document.body.style.setProperty('--cornell-border-r', '2px solid var(--text-accent)');
@@ -7226,6 +7248,66 @@ this.registerEvent(
             document.body.style.setProperty('--cornell-border-l', '2px solid var(--text-accent)');
             document.body.style.setProperty('--cornell-border-r', 'none');
             document.body.style.setProperty('--cornell-text-align', 'left');
+        }
+
+        // 👇 MARGENES RESPONSIVOS CON SLIDER DINÁMICO 👇
+        
+        // 1. Buscamos o creamos la etiqueta <style> en el head del documento
+        let dynamicStyle = document.getElementById('cornell-dynamic-styles');
+        if (!dynamicStyle) {
+            dynamicStyle = document.createElement('style');
+            dynamicStyle.id = 'cornell-dynamic-styles';
+            document.head.appendChild(dynamicStyle);
+        }
+
+        // 2. Si la opción está activada, inyectamos el CSS con el ancho exacto del slider
+        if (this.settings.responsiveMarginalia) {
+            document.body.classList.add('cornell-responsive-mode');
+            
+            dynamicStyle.innerText = `
+                @container editor-container (max-width: ${this.settings.responsiveThreshold}px) {
+                    body.cornell-responsive-mode .cm-cornell-margin,
+                    body.cornell-responsive-mode .reading-mode-margin {
+                        position: relative !important;
+                        width: 100% !important;
+                        float: none !important;
+                        clear: both !important;
+                        margin-left: 0 !important;
+                        margin-right: 0 !important;
+                        left: auto !important;
+                        right: auto !important;
+                        display: block !important;
+                        margin-top: 5px !important;
+                        margin-bottom: 15px !important;
+                        border-left: 4px solid currentColor !important; 
+                        border-right: none !important;
+                        text-align: left !important;
+                        box-sizing: border-box !important; 
+                    }
+                    body.cornell-responsive-mode .cornell-col-left,
+                    body.cornell-responsive-mode .cornell-col-right {
+                        position: relative !important;
+                        width: 100% !important;
+                        left: auto !important;
+                        right: auto !important;
+                        display: block !important;
+                        float: none !important;
+                        margin: 0 !important;
+                        clear: both !important;
+                    }
+                    body.cornell-responsive-mode .reading-mode-margin.cornell-reverse-align {
+                        margin-left: 0 !important;
+                        margin-right: 0 !important;
+                        border-left: 4px solid currentColor !important;
+                        border-right: none !important;
+                        text-align: left !important;
+                    }
+                }
+            `;
+        } else {
+            // 3. Si está desactivado, quitamos la clase y vaciamos los estilos inyectados
+            document.body.classList.remove('cornell-responsive-mode');
+            dynamicStyle.innerText = '';
         }
     }
     async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }

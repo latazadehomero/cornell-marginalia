@@ -1692,3 +1692,15 @@ body.theme-dark .cornell-pinboard-item img[src*="doodle_"] {
     border: none !important;
     padding: 0 !important;
 }
+
+/* ======================================================
+   📱 MODO RESPONSIVO OPCIONAL (AUTO-COLLAPSE)
+   ====================================================== */
+
+/* Declaramos ambas vistas explícitamente como contenedores medibles */
+body.cornell-responsive-mode .workspace-leaf-content,
+body.cornell-responsive-mode .markdown-source-view,
+body.cornell-responsive-mode .markdown-reading-view {
+    container-type: inline-size;
+    container-name: editor-container;
+}

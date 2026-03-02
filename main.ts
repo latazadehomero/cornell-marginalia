@@ -8,7 +8,7 @@ import { CustomBackgroundAddon } from "./addons/CustomBackgroundAddon";
 import { RhizomeAddon, RHIZOME_VIEW_TYPE } from "./addons/RhizomeAddon";
 import { PdfDoodleAddon } from "./addons/PdfDoodleAddon";
 import { SuperDoodleAddon } from "./addons/super-doodle";
-
+import { BlurtingAddon, BlurtingSetupModal } from "./addons/BlurtingAddon";
 
 // =================================================================
 // 🧠 EL CEREBRO PÚBLICO: OMNI CAPTURE MANAGER
@@ -202,6 +202,7 @@ interface CornellSettings {
     addons: Record<string, boolean>; 
     userStats: UserStats;
     enablePdfDoodle: boolean;
+    adaptiveMode: boolean;
 }
 
 
@@ -229,6 +230,7 @@ const DEFAULT_SETTINGS: CornellSettings = {
     marginWidth: 25,
     fontSize: '0.85em',
     fontFamily: 'inherit',
+    adaptiveMode: false,
     enableReadingView: true,
     tags: [
         { prefix: '!', color: '#ffea00' }, 
@@ -1267,7 +1269,7 @@ class SidebarDoodleModal extends Modal {
 // --- VISTA LATERAL (EXPLORER) ESTÉTICA MINIMALISTA Y BLINDADA ●🧠 ---
 export class CornellNotesView extends ItemView {
     plugin: CornellMarginalia;
-    currentTab: 'current' | 'vault' | 'threads' | 'pinboard' = 'current';
+    currentTab: 'current' | 'vault' | 'threads' | 'pinboard' | 'reviews' = 'current';
     // 🧠 Memoria para el Cosido por Teclado
     selectedForStitch: MarginaliaItem[] = [];
     
@@ -1353,10 +1355,15 @@ export class CornellNotesView extends ItemView {
         const cancelBtn = leftGrp.createEl('button', { title: 'Return to Board' });
         setIcon(cancelBtn, "arrow-left"); // Usamos icono en vez de texto para ahorrar espacio
         cancelBtn.style.boxShadow = 'none';
-        cancelBtn.onclick = () => {
-            this.isZenMode = false;
-            this.applyFiltersAndRender();
-        };
+        // 👇 Si está en Focus Mode, desaparecemos el botón de volver atrás para que no escape
+        if (this.isBlurtingActive) {
+            cancelBtn.style.display = 'none';
+        } else {
+            cancelBtn.onclick = () => {
+                this.isZenMode = false;
+                this.applyFiltersAndRender();
+            };
+        }
 
         const penBtn = leftGrp.createEl('button', { cls: 'mod-cta', title: 'Pen' });
         setIcon(penBtn, "pencil");
@@ -1398,57 +1405,80 @@ export class CornellNotesView extends ItemView {
         // ⬇️ A partir de aquí tu código sigue normal:
         // saveBtn.onclick = async () => { ... }
 
-        const saveBtn = rightGrp.createEl('button', { text: '💾 Attach', cls: 'mod-cta', title: 'Save and add to Board' });
-        saveBtn.style.backgroundColor = 'var(--interactive-accent)';
-        saveBtn.style.color = 'var(--text-on-accent)';
-        saveBtn.onclick = async () => {
-            if (!this.zenCanvasEl) return;
-            saveBtn.innerText = '⏳ Saving...';
-            
-            const dataUrl = this.zenCanvasEl.toDataURL("image/png");
-            const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
-            const arrayBuffer = base64ToArrayBuffer(base64Data);
+        // ⬇️ EL BOTÓN INTELIGENTE (Attach normal o Finish Blurting)
+        const saveBtn = rightGrp.createEl('button', { cls: 'mod-cta' });
 
-            // @ts-ignore
-            const dateStr = window.moment().format('YYYYMMDD_HHmmss');
-            const fileName = `zendoodle_${dateStr}.png`;
-            const folder = this.plugin.settings.doodleFolder.trim();
-            let attachmentPath = fileName;
+        if (this.isBlurtingActive) {
+            // --- 🧠 MODO BLURTING: Finalizar Sesión ---
+            saveBtn.innerText = '🏁 Finish & Audit';
+            saveBtn.title = 'Finish Session and Audit';
+            saveBtn.style.backgroundColor = 'var(--color-purple)';
+            saveBtn.style.color = 'white';
             
-            if (folder) {
-                await this.plugin.ensureFolderExists(folder);
-                attachmentPath = `${folder}/${fileName}`;
-            } else {
-                try {
-                    // @ts-ignore
-                    attachmentPath = await this.app.fileManager.getAvailablePathForAttachment(fileName, "");
-                } catch (e) { 
-                    attachmentPath = fileName; 
+            saveBtn.onclick = () => {
+                this.isBlurtingActive = false;
+                new Notice("🎨 Visual Session finished! Time to audit in RED.");
+                
+                // NOTA: No cerramos isZenMode aquí para que el dibujo siga en pantalla
+                this.renderUI();
+                this.applyFiltersAndRender();
+            };
+        } else {
+            // --- 💾 MODO NORMAL: Attach al Board ---
+            saveBtn.innerText = '💾 Attach';
+            saveBtn.title = 'Save and add to Board';
+            saveBtn.style.backgroundColor = 'var(--interactive-accent)';
+            saveBtn.style.color = 'var(--text-on-accent)';
+            
+            saveBtn.onclick = async () => {
+                if (!this.zenCanvasEl) return;
+                saveBtn.innerText = '⏳ Saving...';
+                
+                const dataUrl = this.zenCanvasEl.toDataURL("image/png");
+                const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
+                const arrayBuffer = base64ToArrayBuffer(base64Data);
+
+                // @ts-ignore
+                const dateStr = window.moment().format('YYYYMMDD_HHmmss');
+                const fileName = `zendoodle_${dateStr}.png`;
+                const folder = this.plugin.settings.doodleFolder.trim();
+                let attachmentPath = fileName;
+                
+                if (folder) {
+                    await this.plugin.ensureFolderExists(folder);
+                    attachmentPath = `${folder}/${fileName}`;
+                } else {
+                    try {
+                        // @ts-ignore
+                        attachmentPath = await this.app.fileManager.getAvailablePathForAttachment(fileName, "");
+                    } catch (e) { 
+                        attachmentPath = fileName; 
+                    }
                 }
-            }
-            
-            await this.app.vault.createBinary(attachmentPath, arrayBuffer);
-            const actualFileName = attachmentPath.split('/').pop();
-            const doodleSyntax = `![[${actualFileName}]]`; 
-            
-            this.pinboardItems.push({ 
-                text: doodleSyntax, 
-                rawText: doodleSyntax, 
-                color: 'transparent', 
-                file: null as any, 
-                line: -1, 
-                blockId: null, 
-                outgoingLinks: [], 
-                isCustom: true, // Lo metemos como nodo esqueleto para que no busque archivos asociados
-                indentLevel: 0
-            });
-            
-            new Notice('🎨 Zen Doodle attached to Board!');
-            this.isZenMode = false;
-            // Limpiamos el lienzo para la próxima vez
-            if (this.zenCtx) this.zenCtx.clearRect(0, 0, this.zenCanvasEl.width, this.zenCanvasEl.height);
-            this.applyFiltersAndRender();
-        };
+                
+                await this.app.vault.createBinary(attachmentPath, arrayBuffer);
+                const actualFileName = attachmentPath.split('/').pop();
+                const doodleSyntax = `![[${actualFileName}]]`; 
+                
+                this.pinboardItems.push({ 
+                    text: doodleSyntax, 
+                    rawText: doodleSyntax, 
+                    color: 'transparent', 
+                    file: null as any, 
+                    line: -1, 
+                    blockId: null, 
+                    outgoingLinks: [], 
+                    isCustom: true, // Lo metemos como nodo esqueleto para que no busque archivos asociados
+                    indentLevel: 0
+                });
+                
+                new Notice('🎨 Zen Doodle attached to Board!');
+                this.isZenMode = false;
+                // Limpiamos el lienzo para la próxima vez
+                if (this.zenCtx) this.zenCtx.clearRect(0, 0, this.zenCanvasEl.width, this.zenCanvasEl.height);
+                this.applyFiltersAndRender();
+            };
+        }
 
         // 2. EL LIENZO INMORTAL
         if (!this.zenCanvasEl) {
@@ -1499,12 +1529,117 @@ export class CornellNotesView extends ItemView {
     }
 
     renderUI() {
-        const container = this.containerEl.children[1];
+        const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
         container.addClass('cornell-sidebar-container');
 
-        container.createEl("h4", { text: "Marginalia Explorer", cls: "cornell-sidebar-title" });
+        if (this.isBlurtingActive || this.isAuditing) {
+            // 🛡️ 1. JAULA CSS DE TITANIO (Absolute Fill)
+            container.style.position = "absolute";
+            container.style.top = "0";
+            container.style.bottom = "0";
+            container.style.left = "0";
+            container.style.right = "0";
+            container.style.display = "flex";
+            container.style.flexDirection = "column";
+            container.style.padding = "10px";
+            container.style.overflow = "hidden";
 
+            // Cambiamos el título dinámicamente
+            const titleText = this.isBlurtingActive ? "🧠 Focus Mode (Draw!)" : "🖍️ Audit Phase (Correct in Red)";
+            container.createEl("h4", { text: titleText, cls: "cornell-sidebar-title" });
+            
+            const actionBtn = container.createEl("button", { cls: "mod-cta" });
+            actionBtn.style.width = "100%";
+            actionBtn.style.marginBottom = "15px";
+            actionBtn.style.flexShrink = "0"; 
+            
+            if (this.isBlurtingActive) {
+                actionBtn.innerText = "🏁 Finish & Audit";
+                actionBtn.style.backgroundColor = "var(--color-purple)";
+                actionBtn.style.color = "white";
+                
+                actionBtn.onclick = () => {
+                    // 📸 1. CAPTURAR LA IMAGEN ORIGINAL ANTES DE CAMBIAR A ROJO
+                    if (this.blurtingFormat === "visual" && this.zenCanvasEl) {
+                        const dataUrl = this.zenCanvasEl.toDataURL("image/png");
+                        const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
+                        this.originalCanvasData = base64ToArrayBuffer(base64Data);
+                    }
+
+                    // 🔄 2. CAMBIO DE ESTADO
+                    this.isBlurtingActive = false;
+                    this.isAuditing = true; 
+                    
+                    new Notice("🎨 Session finished! Time to audit in RED.");
+                    this.renderUI(); // Redibuja la interfaz en modo Split-Screen
+                    
+                    // 🪄 3. DISPARAR LÁPIZ ROJO (micro-retraso para que el DOM esté listo)
+                    if (this.blurtingFormat === "visual") {
+                        setTimeout(() => this.containerEl.dispatchEvent(new CustomEvent('cornell-force-red-pen')), 50);
+                    }
+                };
+            } else {
+                actionBtn.innerText = "💾 Save Session to Vault";
+                actionBtn.style.backgroundColor = "var(--color-green)";
+                actionBtn.style.color = "white";
+                actionBtn.onclick = () => this.saveBlurtingSession();
+            }
+
+            // 📦 ZONA SUPERIOR: EL CANVAS (Ocupa 100% si dibujas, 50% si auditas)
+            const contentDiv = container.createDiv({ cls: 'cornell-sidebar-content' });
+            contentDiv.style.flexGrow = "1";
+            contentDiv.style.height = this.isAuditing ? "50%" : "100%"; // 👈 La magia de la pantalla dividida
+            contentDiv.style.width = "100%";
+            contentDiv.style.position = "relative";
+            contentDiv.style.display = "flex";
+            contentDiv.style.flexDirection = "column";
+            contentDiv.style.overflow = "hidden";
+            
+            if (this.blurtingFormat === "visual") {
+                this.renderZenDoodle(contentDiv);
+            }
+
+            // 📚 ZONA INFERIOR: LAS NOTAS DE REFERENCIA (Solo aparece en Auditoría)
+            if (this.isAuditing) {
+                const deckDiv = container.createDiv({ cls: 'cornell-audit-deck' });
+                deckDiv.style.flexGrow = "1";
+                deckDiv.style.height = "50%";
+                deckDiv.style.overflowY = "auto";
+                deckDiv.style.borderTop = "2px dashed var(--background-modifier-border)";
+                deckDiv.style.marginTop = "10px";
+                deckDiv.style.paddingTop = "10px";
+                deckDiv.style.display = "flex";
+                deckDiv.style.flexDirection = "column";
+                deckDiv.style.gap = "10px";
+                
+                deckDiv.createEl("h5", { text: "📚 Your Reference Notes:", attr: { style: "margin: 0; color: var(--text-muted); text-align: center;" } });
+                
+                // Pintamos las tarjetas que el usuario estaba estudiando
+                this.blurtingDeck.forEach(item => {
+                    this.createItemDiv(item, deckDiv);
+                });
+            }
+
+            return; 
+        
+        }
+
+        // LIMPIEZA DE SEGURIDAD PARA EL EXPLORADOR NORMAL
+        container.style.position = "";
+        container.style.top = "";
+        container.style.bottom = "";
+        container.style.left = "";
+        container.style.right = "";
+        container.style.display = ""; 
+        container.style.flexDirection = "";
+        container.style.padding = "";
+        container.style.overflow = "";
+
+        container.createEl("h4", { text: "Marginalia Explorer", cls: "cornell-sidebar-title" });
+        this.renderQuickCapture(container as HTMLElement);
+
+    
         // --- 🧩 INYECCIÓN DEL ADDON DE GAMIFICACIÓN ---
         if (this.plugin.settings.addons && this.plugin.settings.addons["gamification-profile"]) {
             const stats = this.plugin.settings.userStats;
@@ -1547,8 +1682,56 @@ export class CornellNotesView extends ItemView {
         const tabVault = controlsDiv.createEl("button", { text: "Vault", cls: this.currentTab === 'vault' ? 'cornell-tab-active' : '' });
         const tabThreads = controlsDiv.createEl("button", { text: "⌇ Threads", cls: this.currentTab === 'threads' ? 'cornell-tab-active' : '' });
         const tabPinboard = controlsDiv.createEl("button", { text: "● Board", cls: this.currentTab === 'pinboard' ? 'cornell-tab-active' : '', title: "Your Pinboard" });
-        
+        // 🧩 INYECCIÓN CONDICIONAL DEL BOTÓN REVIEWS (Solo si Blurting está activo)
+        if (this.plugin.settings.addons && this.plugin.settings.addons["blurting-mode"]) {
+            const tabReviews = controlsDiv.createEl("button", { 
+                cls: this.currentTab === 'reviews' ? 'cornell-tab-active' : '', 
+                title: "Spaced Repetition Reviews" 
+            });
+            
+            // Estética Nativa (Icono Lucide + Texto)
+            tabReviews.style.display = "flex";
+            tabReviews.style.alignItems = "center";
+            tabReviews.style.justifyContent = "center";
+            tabReviews.style.gap = "5px";
+            
+            const iconSpan = tabReviews.createSpan();
+            setIcon(iconSpan, "calendar-clock"); // 👈 Icono nativo de Obsidian
+            tabReviews.createSpan({ text: "Reviews" });
+
+            // La acción del clic ahora vive aquí, junto a su botón
+            tabReviews.onclick = async () => { 
+                this.currentTab = 'reviews'; 
+                this.renderUI(); 
+                this.applyFiltersAndRender(); 
+            };
+        } else if (this.currentTab === 'reviews') {
+            // 🛡️ Seguro de vida: Si apagó el addon mientras estaba en esta pestaña, lo devolvemos a Current
+            this.currentTab = 'current';
+        }
         const actionControlsDiv = container.createDiv({ cls: 'cornell-sidebar-controls' });
+        // 🧩 INYECCIÓN DEL ADDON DE BLURTING 
+        // 👇 INYECCIÓN CONDICIONAL DEL BOTÓN BLURTING (Ahora con icono nativo)
+        if (this.plugin.settings.addons && this.plugin.settings.addons["blurting-mode"]) {
+            const btnBlurting = actionControlsDiv.createEl("button", { title: "Start Active Recall Session (1-3-7)" });
+            btnBlurting.style.display = "flex";
+            btnBlurting.style.alignItems = "center";
+            btnBlurting.style.gap = "5px";
+            
+            setIcon(btnBlurting.createSpan(), "brain"); // 👈 Icono nativo de Lucide
+            btnBlurting.createSpan({ text: "Blurt" });
+
+            btnBlurting.onclick = () => {
+            const deck = this.getCurrentFilteredDeck(); 
+            if (deck.length === 0) {
+                new Notice("⚠️ Your current deck is empty. Scan notes or adjust filters first.");
+                return;
+            }
+            
+            // 👈 AQUÍ EL ARREGLO: Pasamos 'this' justo en el medio
+            new BlurtingSetupModal(this.plugin.app, this, deck).open();
+        };
+        }
         const btnStitch = actionControlsDiv.createEl("button", { text: "⛓︎ Stitch", title: "Connect two notes" });
         
         const btnGroup = actionControlsDiv.createEl("button", { 
@@ -1602,7 +1785,6 @@ export class CornellNotesView extends ItemView {
         tabVault.onclick = async () => { this.currentTab = 'vault'; this.renderUI(); await this.scanNotes(); };
         tabThreads.onclick = async () => { this.currentTab = 'threads'; this.renderUI(); await this.scanNotes(); };
         tabPinboard.onclick = async () => { this.currentTab = 'pinboard'; this.renderUI(); this.applyFiltersAndRender(); };
-        
         btnRefresh.onclick = async () => { new Notice("Scanning..."); await this.scanNotes(); };
 
         btnStitch.onclick = () => {
@@ -1867,7 +2049,18 @@ export class CornellNotesView extends ItemView {
             
         }
     }
-    
+    // 🧠 HELPER: Captura el estado actual de la vista respetando los filtros
+    getCurrentFilteredDeck(): MarginaliaItem[] {
+        const isFilterActive = this.searchQuery.length > 0 || this.activeColorFilters.size > 0;
+        
+        const matchesFilter = (item: MarginaliaItem) => {
+            const matchesSearch = item.text.toLowerCase().includes(this.searchQuery) || item.file.basename.toLowerCase().includes(this.searchQuery);
+            const matchesColor = this.activeColorFilters.size === 0 || this.activeColorFilters.has(item.color);
+            return matchesSearch && matchesColor;
+        };
+
+        return this.cachedItems.filter(matchesFilter);
+    }
 
     async scanNotes() {
         if (this.currentTab === 'pinboard') {
@@ -1999,13 +2192,23 @@ export class CornellNotesView extends ItemView {
     }
 
     applyFiltersAndRender() {
+        if (this.isBlurtingActive) {
+            // Ya inyectamos el canvas directo en renderUI() de forma 100% segura. 
+            // Solo detenemos el flujo para que no intente cargar ni pisar notas.
+            return; 
+        }
         // 🧹 CAZAFANTASMAS 1: Destruye cualquier tooltip huérfano antes de redibujar la barra
         document.querySelectorAll('.cornell-hover-tooltip').forEach(el => el.remove());
         const contentDiv = this.containerEl.querySelector('.cornell-sidebar-content') as HTMLElement;
         if (!contentDiv) return;
+    
 
         if (this.currentTab === 'pinboard') {
             this.renderPinboardTab(contentDiv);
+            return;
+        }
+        if (this.currentTab === 'reviews') {
+            this.renderReviewsTab(contentDiv);
             return;
         }
 
@@ -2503,7 +2706,173 @@ export class CornellNotesView extends ItemView {
             this.pinboardFocusIndex = null; 
         }
     }
+// --- 🧠 ESTADOS DE BLURTING ---
+    isBlurtingActive: boolean = false;
+    isAuditing: boolean = false;
+    originalCanvasData: ArrayBuffer | null = null;
+    blurtingFormat: "visual" | "textual" = "textual"; // 👈 Nueva memoria
+    blurtingDeck: MarginaliaItem[] = [];
 
+
+    // ======================================================
+    // 🧠 MOTOR DE REPETICIÓN ESPACIADA (1-3-7) Y AUDITORÍA
+    // ======================================================
+    async saveBlurtingSession() {
+        // @ts-ignore
+        const zkId = window.moment().format('YYYYMMDDHHmmss');
+        // @ts-ignore
+        const today = window.moment().format('YYYY-MM-DD');
+        // @ts-ignore
+        const nextReview = window.moment().add(1, 'days').format('YYYY-MM-DD'); 
+        
+        let fileContent = `---
+blurting_source_query: "${this.searchQuery || 'Full Vault'}"
+first_session: ${today}
+next_review: ${nextReview}
+review_stage: 1
+---\n\n# 🧠 Blurting Audit: ${this.searchQuery || 'Session'}\n\n`;
+
+        if (this.blurtingFormat === "visual" && this.zenCanvasEl) {
+            const folder = this.plugin.settings.doodleFolder.trim();
+            await this.plugin.ensureFolderExists(folder);
+
+            // 📸 IMAGEN 1: ORIGINAL (La que guardamos en memoria al pulsar Finish)
+            if (this.originalCanvasData) {
+                const origName = `blurting_raw_${zkId}.png`;
+                const origPath = folder ? `${folder}/${origName}` : origName;
+                await this.plugin.app.vault.createBinary(origPath, this.originalCanvasData);
+                fileContent += `### 🧠 1. The Blurt (Original)\n![[${origName}]]\n\n`;
+            }
+
+            // 📸 IMAGEN 2: CORREGIDA (La que está actualmente en el canvas con marcas rojas)
+            const dataUrl = this.zenCanvasEl.toDataURL("image/png");
+            const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
+            const correctedBuffer = base64ToArrayBuffer(base64Data);
+            
+            const corrName = `blurting_audit_${zkId}.png`;
+            const corrPath = folder ? `${folder}/${corrName}` : corrName;
+            await this.plugin.app.vault.createBinary(corrPath, correctedBuffer);
+            fileContent += `### 🖍️ 2. The Audit (Corrections)\n![[${corrName}]]\n\n`;
+        }
+
+        fileContent += `*Deck contained ${this.blurtingDeck.length} notes.*`;
+
+        const folderPath = this.plugin.settings.zkFolder.trim() || "/";
+        await this.plugin.ensureFolderExists(folderPath);
+        
+        let finalPath = folderPath === "/" ? `Audit_${zkId}.md` : `${folderPath}/Audit_${zkId}.md`;
+        await this.plugin.app.vault.create(finalPath, fileContent);
+        
+        new Notice("✅ Dual Session saved to Spaced Repetition Engine!");
+        
+        // Limpieza final y liberación de memoria
+        this.originalCanvasData = null;
+        this.isAuditing = false;
+        this.isZenMode = false;
+        this.currentTab = 'reviews'; 
+        this.renderUI();
+        this.applyFiltersAndRender();
+    }
+
+    renderReviewsTab(container: HTMLElement) {
+        container.empty();
+        container.createEl("h3", { text: "🔔 Due for Review (1-3-7)", cls: "cornell-sidebar-title" });
+
+        // @ts-ignore
+        const todayStr = window.moment().format('YYYY-MM-DD');
+        const cache = this.plugin.app.metadataCache;
+        const allFiles = this.plugin.app.vault.getMarkdownFiles();
+        
+        const dueReviews: any[] = [];
+
+        // Escáner ultrasónico de caché
+        for (const file of allFiles) {
+            const fileCache = cache.getFileCache(file);
+            if (fileCache?.frontmatter && fileCache.frontmatter.next_review) {
+                const nextReview = fileCache.frontmatter.next_review;
+                const stage = fileCache.frontmatter.review_stage || 1;
+                
+                if (stage < 4 && nextReview <= todayStr) { 
+                    dueReviews.push({ file, frontmatter: fileCache.frontmatter });
+                }
+            }
+        }
+
+        if (dueReviews.length === 0) {
+            container.createEl("p", { text: "🎉 You're all caught up! No reviews pending.", cls: "cornell-sidebar-empty" });
+            return;
+        }
+
+        dueReviews.forEach(review => {
+            const card = container.createDiv({ cls: 'cornell-sidebar-item' });
+            card.style.borderLeftColor = "var(--color-purple)";
+            
+            const title = review.frontmatter.blurting_source_query || review.file.basename;
+            card.createDiv({ text: `📚 Topic: ${title}`, attr: { style: "font-weight: bold; margin-bottom: 5px; color: var(--text-normal);" }});
+            card.createDiv({ text: `Stage: ${review.frontmatter.review_stage} (Due: ${review.frontmatter.next_review})`, cls: 'cornell-sidebar-item-meta' });
+            
+            const btnRow = card.createDiv({ attr: { style: "display: flex; gap: 10px; margin-top: 10px;" }});
+            
+            const openBtn = btnRow.createEl('button', { text: "👁️ Open" });
+            openBtn.onclick = () => this.plugin.app.workspace.getLeaf(false).openFile(review.file);
+            
+            const advanceBtn = btnRow.createEl('button', { text: "✅ Advance Stage", cls: "mod-cta" });
+            advanceBtn.style.backgroundColor = "var(--color-green)";
+            advanceBtn.style.color = "white";
+            advanceBtn.onclick = async () => {
+                await this.advanceReviewStage(review.file, review.frontmatter);
+                this.applyFiltersAndRender(); // Recargar la vista visualmente
+            };
+        });
+    }
+
+    async advanceReviewStage(file: TFile, currentFrontmatter: any) {
+        const currentStage = currentFrontmatter.review_stage || 1;
+        let daysToAdd = 0;
+        let newStage = currentStage + 1;
+        
+        if (currentStage === 1) daysToAdd = 2; // Día 1 -> +2 = Día 3
+        else if (currentStage === 2) daysToAdd = 4; // Día 3 -> +4 = Día 7
+        else if (currentStage === 3) daysToAdd = 999; 
+        
+        // @ts-ignore
+        const nextReviewStr = window.moment().add(daysToAdd, 'days').format('YYYY-MM-DD');
+        
+        await this.plugin.app.fileManager.processFrontMatter(file, (frontmatter) => {
+            frontmatter.review_stage = newStage;
+            if (newStage > 3) {
+                frontmatter.next_review = "Mastered";
+            } else {
+                frontmatter.next_review = nextReviewStr;
+            }
+        });
+        
+        new Notice(newStage > 3 ? "🎓 Topic Mastered!" : `📈 Advanced! Next review on ${nextReviewStr}`);
+    }
+    // --- ⚡ DISPARADOR DE LA SESIÓN ---
+    async startBlurtingSession(deck: MarginaliaItem[], format: "visual" | "textual") {
+        this.isBlurtingActive = true;
+        this.blurtingDeck = deck;
+        this.blurtingFormat = format;
+
+        if (format === "visual") {
+            this.currentTab = 'pinboard'; 
+            this.isZenMode = true; // Fundamental mantenerlo para la fase de Auditoría
+        } else {
+            // @ts-ignore
+            const zkId = window.moment().format('YYYYMMDDHHmmss');
+            const fileName = `${this.plugin.settings.zkFolder}/Blurting_${zkId}.md`;
+            
+            await this.plugin.ensureFolderExists(this.plugin.settings.zkFolder);
+            const header = `# 🧠 Blurting Session\n*Write down everything you remember about the ${deck.length} notes in your deck.*\n\n---\n\n`;
+            const newFile = await this.plugin.app.vault.create(fileName, header);
+            
+            await this.plugin.app.workspace.getLeaf(true).openFile(newFile);
+        }
+
+        this.renderUI();
+        this.applyFiltersAndRender();
+    }
     async exportPinboard() {
         if (this.pinboardItems.length === 0) return;
         // @ts-ignore
@@ -3696,6 +4065,7 @@ async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
             return lines.join('\n');
         });
     }
+    
 
     // Se ejecuta cuando cierras la barra lateral
     async onClose() {
@@ -3726,6 +4096,18 @@ export class CornellSettingTab extends PluginSettingTab {
         // 🎨 APPEARANCE & RENDERING
         // ======================================================
         containerEl.createEl('h3', { text: '🎨 Appearance & Rendering' });
+
+        new Setting(containerEl)
+            .setName('Adaptive Width (Theme Compatibility)')
+            .setDesc('🧠 Auto-calculates margin width based on empty screen space. Turn ON if you are having problems with your current  theme to prevent overlap.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.adaptiveMode)
+                .onChange(async (value) => {
+                    this.plugin.settings.adaptiveMode = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.updateStyles(); // Aplicamos el CSS en tiempo real
+                })
+            );
 
         new Setting(containerEl)
             .setName('Margin Alignment')
@@ -4139,6 +4521,30 @@ export class CornellSettingTab extends PluginSettingTab {
                         this.plugin.superDoodleAddon.unload();
                         new Notice(`❌ ${this.plugin.superDoodleAddon.name} disabled`);
                     }
+                })
+            );
+        
+        // --- ADDON: BLURTING MODE ---
+        new Setting(containerEl)
+            .setName(this.plugin.blurtingAddon.name)
+            .setDesc(this.plugin.blurtingAddon.description)
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.addons[this.plugin.blurtingAddon.id] || false)
+                .onChange(async (value) => {
+                    this.plugin.settings.addons[this.plugin.blurtingAddon.id] = value;
+                    await this.plugin.saveSettings();
+
+                    if (value) {
+                        this.plugin.blurtingAddon.load();
+                        new Notice(`✅ ${this.plugin.blurtingAddon.name} enabled`);
+                    } else {
+                        this.plugin.blurtingAddon.unload();
+                        new Notice(`❌ ${this.plugin.blurtingAddon.name} disabled`);
+                    }
+                    // Refrescamos las vistas laterales para que el botón aparezca/desaparezca en vivo
+                    this.plugin.app.workspace.getLeavesOfType(CORNELL_VIEW_TYPE).forEach(leaf => {
+                        if (leaf.view instanceof CornellNotesView) leaf.view.renderUI();
+                    });
                 })
             );
     }
@@ -5870,6 +6276,7 @@ export default class CornellMarginalia extends Plugin {
     rhizomeAddon!: RhizomeAddon;
     // SUPER DOODLEEEEEEEEEEEEEEEEEEE
     public superDoodleAddon!: SuperDoodleAddon;
+    public blurtingAddon!: BlurtingAddon;
    
     // 📁 MOTOR DE CREACIÓN DE CARPETAS
     async ensureFolderExists(folderPath: string) {
@@ -5923,6 +6330,12 @@ export default class CornellMarginalia extends Plugin {
         // Dentro de onload() { ... }
         if (this.settings.enablePdfDoodle) {
         new PdfDoodleAddon(this).load();
+        }
+
+        // 👇 bluttering
+        this.blurtingAddon = new BlurtingAddon(this);
+        if (this.settings.addons && this.settings.addons[this.blurtingAddon.id]) {
+            this.blurtingAddon.load();
         }
         // 👆 FIN DE LA CONEXIÓN DE ADDONS
 
@@ -6733,12 +7146,28 @@ this.registerEvent(
     }
 
     updateStyles() {
-        document.body.style.setProperty('--cornell-width', `${this.settings.marginWidth}%`);
+        // 🧠 MOTOR ADAPTATIVO: ¿Calculamos el ancho estático o dinámico?
+        let widthValue = `${this.settings.marginWidth}%`; // Tu lógica clásica
+
+        if (this.settings.adaptiveMode) {
+            // Lógica SAAM: 
+            // 1. 100vw (ancho total) menos var(--file-line-width) (ancho del texto central).
+            // 2. Lo dividimos entre 2 para obtener el espacio libre de un solo lado.
+            // 3. Le restamos 40px como margen de respiración.
+            // 4. Usamos clamp() para que la nota nunca sea menor a 150px ni mayor a 400px.
+            widthValue = `clamp(150px, calc((100vw - var(--file-line-width, 700px)) / 2 - 40px), 400px)`;
+        }
+
+        // Inyectamos el valor ganador en el CSS
+        document.body.style.setProperty('--cornell-width', widthValue);
+        
+        // ... (El resto de tu función queda exactamente igual) ...
         document.body.style.setProperty('--cornell-font-size', this.settings.fontSize);
         document.body.style.setProperty('--cornell-font-family', this.settings.fontFamily);
         
         if (this.settings.alignment === 'left') {
             document.body.style.setProperty('--cornell-float', 'left');
+            // Como widthValue ahora puede ser una fórmula, calc() lo resolverá perfectamente
             document.body.style.setProperty('--cornell-margin-left', `calc(-1 * var(--cornell-width) - 20px)`);
             document.body.style.setProperty('--cornell-margin-right', '15px');
             document.body.style.setProperty('--cornell-border-r', '2px solid var(--text-accent)');
@@ -6753,7 +7182,6 @@ this.registerEvent(
             document.body.style.setProperty('--cornell-text-align', 'left');
         }
     }
-
     async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
     async saveSettings() { await this.saveData(this.settings); }
 

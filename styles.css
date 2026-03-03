@@ -72,21 +72,22 @@
    🔄 LÓGICA PARA LA FLECHA INVERSA (%%<)
    ====================================================== */
 
-body[style*="--cornell-float: right"] .cornell-reverse-align {
-    float: left !important;
-    clear: left !important;
-    margin-left: calc(-1 * var(--cornell-width) - 20px) !important;
-    margin-right: 15px !important;
+/* 🛡️ BLINDAJE: :not(.reading-mode-margin) evita que el CSS empuje
+   la nota al doble en Modo Lectura. El JS ya se encarga de eso. */
+.cm-cornell-margin.cornell-reverse-align:not(.reading-mode-margin) {
+    float: var(--cornell-float-rev) !important;
+    clear: var(--cornell-float-rev) !important;
+    margin-left: var(--cornell-margin-left-rev) !important;
+    margin-right: var(--cornell-margin-right-rev) !important;
+}
+
+body[style*="--cornell-float: right"] .cm-cornell-margin.cornell-reverse-align {
     text-align: right !important;
     border-right: 2px solid var(--text-accent) !important;
     border-left: none !important;
 }
 
-body[style*="--cornell-float: left"] .cornell-reverse-align {
-    float: right !important;
-    clear: right !important;
-    margin-right: calc(-1 * var(--cornell-width) - 20px) !important;
-    margin-left: 15px !important;
+body[style*="--cornell-float: left"] .cm-cornell-margin.cornell-reverse-align {
     text-align: left !important;
     border-left: 2px solid var(--text-accent) !important;
     border-right: none !important;
@@ -1697,10 +1698,9 @@ body.theme-dark .cornell-pinboard-item img[src*="doodle_"] {
    📱 MODO RESPONSIVO OPCIONAL (AUTO-COLLAPSE)
    ====================================================== */
 
-/* Declaramos ambas vistas explícitamente como contenedores medibles */
-body.cornell-responsive-mode .workspace-leaf-content,
-body.cornell-responsive-mode .markdown-source-view,
-body.cornell-responsive-mode .markdown-reading-view {
+/* Solo necesitamos decirle a CSS qué elemento se va a medir. 
+   Las reglas de colapso ahora las inyecta main.ts dinámicamente. */
+body.cornell-responsive-mode .workspace-leaf-content {
     container-type: inline-size;
     container-name: editor-container;
 }

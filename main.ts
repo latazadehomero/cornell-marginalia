@@ -187,6 +187,7 @@ interface CornellSettings {
     ignoredFolders: string;
     alignment: 'left' | 'right'; 
     marginWidth: number;
+    marginOffset: number;
     fontSize: string;
     fontFamily: string;
     tags: CornellTag[];
@@ -241,6 +242,7 @@ const DEFAULT_SETTINGS: CornellSettings = {
     ignoredFolders: 'Templates',
     alignment: 'left', 
     marginWidth: 25,
+    marginOffset: 20,
     fontSize: '0.85em',
     fontFamily: 'inherit',
     adaptiveMode: false,
@@ -4061,6 +4063,20 @@ export class CornellSettingTab extends PluginSettingTab {
                     this.plugin.updateStyles(); 
                 })
             );
+        // 👇 NUEVO SLIDER DE OFFSET
+        new Setting(containerEl)
+            .setName('Margin Distance (Offset)')
+            .setDesc('Adjust how close or far the marginalia sits from the main text. Higher values push it outwards, lower values pull it inwards.')
+            .addSlider(s => s
+                .setLimits(-50, 150, 5) // Permitimos números negativos por si el usuario quiere montar la nota sobre el texto
+                .setValue(this.plugin.settings.marginOffset)
+                .setDynamicTooltip()
+                .onChange(async (v) => { 
+                    this.plugin.settings.marginOffset = v; 
+                    await this.plugin.saveSettings(); 
+                    this.plugin.updateStyles(); // 🪄 Actualización en vivo
+                })
+            );
 
         new Setting(containerEl)
             .setName('Font Size')
@@ -6937,12 +6953,14 @@ this.registerEvent(
                 column.style.setProperty('bottom', '0', 'important'); 
                 column.style.setProperty('width', 'var(--cornell-width)', 'important');
 
+// 🛠️ INYECCIÓN DE LA VARIABLE MAESTRA EN LA COLUMNA
                 if (isNoteLeft) {
-                    column.style.setProperty('left', 'var(--cornell-margin-left)', 'important');
+                    column.style.setProperty('left', 'var(--cornell-margin-out)', 'important');
+                    column.style.removeProperty('right');
                 } else {
-                    column.style.setProperty('right', 'calc(-1 * var(--cornell-width) - 20px)', 'important');
+                    column.style.setProperty('right', 'var(--cornell-margin-out)', 'important');
+                    column.style.removeProperty('left');
                 }
-
                 if ((isMainLeft && direction === '<') || (!isMainLeft && direction === '>')) {
                     marginDiv.classList.add('cornell-reverse-align');
                 }
@@ -7081,13 +7099,17 @@ this.registerEvent(
                         column.style.setProperty('top', '0', 'important');
                         column.style.setProperty('width', 'var(--cornell-width)', 'important');
                         
-                        if (isNoteLeft) {
-                            column.style.setProperty('left', 'var(--cornell-margin-left)', 'important');
-                        } else {
-                            column.style.setProperty('right', 'calc(-1 * var(--cornell-width) - 20px)', 'important');
-                        }
-                        currentTarget.appendChild(column);
-                    }
+                        // 🛠️ INYECCIÓN DE LA VARIABLE MAESTRA EN LA COLUMNA
+                if (isNoteLeft) {
+                    column.style.setProperty('left', 'var(--cornell-margin-out)', 'important');
+                    column.style.removeProperty('right');
+                } else {
+                    column.style.setProperty('right', 'var(--cornell-margin-out)', 'important');
+                    column.style.removeProperty('left');
+                }
+                        
+                        currentTarget.appendChild(column); // 👈 RECUPERAMOS ESTA LÍNEA
+                    } // 👈 RECUPERAMOS LA LLAVE DE CIERRE QUE FALTABA
 
                     if ((isMainLeft && direction === '<') || (!isMainLeft && direction === '>')) {
                         marginDiv.classList.add('cornell-reverse-align');
@@ -7220,39 +7242,46 @@ this.registerEvent(
     }
 
     updateStyles() {
-        // 🧠 MOTOR ADAPTATIVO: ¿Calculamos el ancho estático o dinámico?
-        let widthValue = `${this.settings.marginWidth}%`; // Tu lógica clásica
-
+        let widthValue = `${this.settings.marginWidth}%`; 
         if (this.settings.adaptiveMode) {
-            // Lógica SAAM: 
             widthValue = `clamp(150px, calc((100vw - var(--file-line-width, 700px)) / 2 - 40px), 400px)`;
         }
 
-        // Inyectamos el valor ganador en el CSS
         document.body.style.setProperty('--cornell-width', widthValue);
+        document.body.style.setProperty('--cornell-offset', `${this.settings.marginOffset}px`);
         
+        // 🚀 VARIABLE MAESTRA: Calcula la distancia exacta hacia afuera
+        document.body.style.setProperty('--cornell-margin-out', `calc(-1 * var(--cornell-width) - var(--cornell-offset))`);
+
         document.body.style.setProperty('--cornell-font-size', this.settings.fontSize);
         document.body.style.setProperty('--cornell-font-family', this.settings.fontFamily);
         
         if (this.settings.alignment === 'left') {
             document.body.style.setProperty('--cornell-float', 'left');
-            document.body.style.setProperty('--cornell-margin-left', `calc(-1 * var(--cornell-width) - 20px)`);
+            document.body.style.setProperty('--cornell-margin-left', 'var(--cornell-margin-out)');
             document.body.style.setProperty('--cornell-margin-right', '15px');
             document.body.style.setProperty('--cornell-border-r', '2px solid var(--text-accent)');
             document.body.style.setProperty('--cornell-border-l', 'none');
             document.body.style.setProperty('--cornell-text-align', 'right');
+            
+            // Variables para flecha invertida (%%<)
+            document.body.style.setProperty('--cornell-float-rev', 'right');
+            document.body.style.setProperty('--cornell-margin-left-rev', '15px');
+            document.body.style.setProperty('--cornell-margin-right-rev', 'var(--cornell-margin-out)');
         } else {
             document.body.style.setProperty('--cornell-float', 'right');
-            document.body.style.setProperty('--cornell-margin-right', `calc(-1 * var(--cornell-width) - 20px)`);
+            document.body.style.setProperty('--cornell-margin-right', 'var(--cornell-margin-out)');
             document.body.style.setProperty('--cornell-margin-left', '15px');
             document.body.style.setProperty('--cornell-border-l', '2px solid var(--text-accent)');
             document.body.style.setProperty('--cornell-border-r', 'none');
             document.body.style.setProperty('--cornell-text-align', 'left');
+            
+            // Variables para flecha invertida (%%<)
+            document.body.style.setProperty('--cornell-float-rev', 'left');
+            document.body.style.setProperty('--cornell-margin-right-rev', '15px');
+            document.body.style.setProperty('--cornell-margin-left-rev', 'var(--cornell-margin-out)');
         }
 
-        // 👇 MARGENES RESPONSIVOS CON SLIDER DINÁMICO 👇
-        
-        // 1. Buscamos o creamos la etiqueta <style> en el head del documento
         let dynamicStyle = document.getElementById('cornell-dynamic-styles');
         if (!dynamicStyle) {
             dynamicStyle = document.createElement('style');
@@ -7260,10 +7289,8 @@ this.registerEvent(
             document.head.appendChild(dynamicStyle);
         }
 
-        // 2. Si la opción está activada, inyectamos el CSS con el ancho exacto del slider
         if (this.settings.responsiveMarginalia) {
             document.body.classList.add('cornell-responsive-mode');
-            
             dynamicStyle.innerText = `
                 @container editor-container (max-width: ${this.settings.responsiveThreshold}px) {
                     body.cornell-responsive-mode .cm-cornell-margin,
@@ -7291,9 +7318,6 @@ this.registerEvent(
                         left: auto !important;
                         right: auto !important;
                         display: block !important;
-                        float: none !important;
-                        margin: 0 !important;
-                        clear: both !important;
                     }
                     body.cornell-responsive-mode .reading-mode-margin.cornell-reverse-align {
                         margin-left: 0 !important;
@@ -7305,7 +7329,6 @@ this.registerEvent(
                 }
             `;
         } else {
-            // 3. Si está desactivado, quitamos la clase y vaciamos los estilos inyectados
             document.body.classList.remove('cornell-responsive-mode');
             dynamicStyle.innerText = '';
         }

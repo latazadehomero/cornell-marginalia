@@ -14,6 +14,59 @@ function base64ToArrayBuffer(base64: string) {
     return bytes.buffer;
 }
 
+// 👇 NUEVO MOTOR: Escanea la matriz de píxeles y recorta el espacio vacío
+function getCroppedCanvas(originalCanvas: HTMLCanvasElement, padding: number = 20): HTMLCanvasElement {
+    const ctx = originalCanvas.getContext('2d');
+    if (!ctx) return originalCanvas;
+
+    const width = originalCanvas.width;
+    const height = originalCanvas.height;
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const data = imageData.data;
+
+    let minX = width, minY = height, maxX = 0, maxY = 0;
+    let hasContent = false;
+
+    // Escaneamos buscando cualquier píxel que no sea 100% transparente (Alpha > 0)
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const alpha = data[(y * width + x) * 4 + 3];
+            if (alpha > 0) {
+                hasContent = true;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+
+    // Si el lienzo está vacío, devolvemos el original
+    if (!hasContent) return originalCanvas;
+
+    // Aplicamos un pequeño margen (padding) para que el dibujo no quede pegado al borde
+    minX = Math.max(0, minX - padding);
+    minY = Math.max(0, minY - padding);
+    maxX = Math.min(width, maxX + padding);
+    maxY = Math.min(height, maxY + padding);
+
+    const croppedWidth = maxX - minX;
+    const croppedHeight = maxY - minY;
+
+    // Creamos un nuevo lienzo con el tamaño exacto
+    const croppedCanvas = document.createElement('canvas');
+    croppedCanvas.width = croppedWidth;
+    croppedCanvas.height = croppedHeight;
+    const croppedCtx = croppedCanvas.getContext('2d');
+
+    if (croppedCtx) {
+        // Copiamos solo la región dibujada del lienzo original al nuevo
+        croppedCtx.drawImage(originalCanvas, minX, minY, croppedWidth, croppedHeight, 0, 0, croppedWidth, croppedHeight);
+    }
+
+    return croppedCanvas;
+}
+
 export abstract class CornellAddon {
     abstract id: string;
     abstract name: string;
@@ -26,7 +79,7 @@ export abstract class CornellAddon {
 export class SuperDoodleAddon extends CornellAddon {
     id = "super-doodle";
     name = "Super Doodle 🎨";
-    description = "Transforma el Zen Doodle en un lienzo masivo (4x) con navegación panorámica, colores y tamaño de pincel ajustable.";
+    description = "Transform Zen Doodle into an adjustable-size canvas with panoramic navigation, colors, and adjustable brush size.";
 
     // Guardamos el método original para restaurarlo después
     private originalRenderZenDoodle: Function | null = null;
@@ -86,13 +139,54 @@ export class SuperDoodleAddon extends CornellAddon {
             // GRUPO CENTRAL: Colores y Tamaño
             const centerGrp = topBar.createDiv({ attr: { style: 'display:flex; gap:10px; align-items:center;' } });
             
-            // Slider de tamaño
+            // 📐 NUEVO: Selector de Tamaño de Lienzo (Redimensionar sin perder el dibujo)
+            const canvasSizeSelect = centerGrp.createEl('select', { title: 'Canvas Resolution' });
+            canvasSizeSelect.style.background = 'transparent';
+            canvasSizeSelect.style.color = 'var(--text-normal)';
+            canvasSizeSelect.style.border = '1px solid var(--background-modifier-border)';
+            canvasSizeSelect.style.borderRadius = '4px';
+            
+            canvasSizeSelect.add(new Option("Size: 1x (Normal)", "800x1200"));
+            canvasSizeSelect.add(new Option("Size: 2x (Large)", "1600x2400"));
+            canvasSizeSelect.add(new Option("Size: 4x (Massive)", "3200x4800", true, true)); // Seleccionado por defecto
+            canvasSizeSelect.add(new Option("Size: 8x (Insane)", "6400x9600"));
+            
+            canvasSizeSelect.onchange = (e) => {
+                if (!view.zenCanvasEl || !view.zenCtx) return;
+                const [newW, newH] = (e.target as HTMLSelectElement).value.split('x').map(Number);
+                
+                // 1. Clonar el dibujo actual a un lienzo invisible temporal
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = view.zenCanvasEl.width;
+                tempCanvas.height = view.zenCanvasEl.height;
+                tempCanvas.getContext('2d')?.drawImage(view.zenCanvasEl, 0, 0);
+                
+                // 2. Cambiar el tamaño (esto por defecto borra el lienzo nativo)
+                view.zenCanvasEl.width = newW;
+                view.zenCanvasEl.height = newH;
+                
+                // 3. Restaurar la configuración del pincel que también se borró
+                view.zenCtx.lineCap = "round";
+                view.zenCtx.lineJoin = "round";
+                view.zenCtx.lineWidth = currentTool === 'eraser' ? currentSize * 3 : currentSize;
+                view.zenCtx.strokeStyle = currentColor;
+                view.zenCtx.globalCompositeOperation = currentTool === 'eraser' ? "destination-out" : "source-over";
+                
+                // 4. Volver a pegar el dibujo original sobre el nuevo lienzo
+                view.zenCtx.drawImage(tempCanvas, 0, 0);
+                
+                new Notice(`📐 Canvas resized to ${newW}x${newH}`);
+            };
+
+            // Slider de tamaño de pincel
             const sizeSlider = centerGrp.createEl('input', { type: 'range' });
             sizeSlider.min = "1"; sizeSlider.max = "50"; sizeSlider.value = "4";
             sizeSlider.style.width = "80px";
             sizeSlider.oninput = (e) => {
                 currentSize = parseInt((e.target as HTMLInputElement).value);
                 if (currentTool === 'pen' && view.zenCtx) view.zenCtx.lineWidth = currentSize;
+                // De paso, mejoramos la goma para que se escale con el slider también
+                else if (currentTool === 'eraser' && view.zenCtx) view.zenCtx.lineWidth = currentSize * 3; 
             };
 
             // Paleta de colores
@@ -119,6 +213,26 @@ export class SuperDoodleAddon extends CornellAddon {
                 };
                 colorBtns.push(cBtn);
             });
+            // 👇 PEGA EL CÓDIGO AQUÍ 👇
+            // 🚨 ESCUCHA DE EVENTOS: El bolígrafo rojo de auditoría
+            view.containerEl.addEventListener('cornell-force-red-pen', () => {
+                currentTool = 'pen';
+                currentColor = '#ff4d4d'; // Forzamos rojo
+                
+                if (view.zenCtx) {
+                    view.zenCtx.strokeStyle = currentColor;
+                    view.zenCtx.globalCompositeOperation = "source-over";
+                    view.zenCtx.lineWidth = currentSize;
+                }
+                
+                updateToolUI(); 
+                
+                // Actualizamos la bolita de color visualmente
+                colorBtns.forEach(btn => btn.style.border = '2px solid transparent');
+                const redBtn = colorBtns.find(b => b.style.backgroundColor === 'rgb(255, 77, 77)' || b.style.backgroundColor === '#ff4d4d' || b.style.backgroundColor === 'var(--color-red)');
+                if (redBtn) redBtn.style.border = '2px solid var(--text-normal)';
+            });
+            // 👆 HASTA AQUÍ 👆
 
             // --- GRUPO DERECHO: Acciones ---
             const rightGrp = topBar.createDiv({ attr: { style: 'display:flex; gap:10px;' } });
@@ -138,7 +252,10 @@ export class SuperDoodleAddon extends CornellAddon {
                 if (!view.zenCanvasEl) return;
                 attachBtn.innerText = '⏳...';
                 
-                const dataUrl = view.zenCanvasEl.toDataURL("image/png");
+                // 1. Pasamos el lienzo gigante por la guillotina inteligente
+                const croppedCanvas = getCroppedCanvas(view.zenCanvasEl);
+                // 2. Extraemos la imagen solo de ese nuevo lienzo recortado
+                const dataUrl = croppedCanvas.toDataURL("image/png");
                 const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
                 const arrayBuffer = base64ToArrayBuffer(base64Data);
 
@@ -188,7 +305,10 @@ export class SuperDoodleAddon extends CornellAddon {
                 if (!view.zenCanvasEl) return;
                 zapBtn.innerText = '⏳ Saving...';
                 
-                const dataUrl = view.zenCanvasEl.toDataURL("image/png");
+                // 1. Pasamos el lienzo gigante por la guillotina inteligente
+                const croppedCanvas = getCroppedCanvas(view.zenCanvasEl);
+                // 2. Extraemos la imagen solo de ese nuevo lienzo recortado
+                const dataUrl = croppedCanvas.toDataURL("image/png");
                 const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
                 const arrayBuffer = base64ToArrayBuffer(base64Data);
 

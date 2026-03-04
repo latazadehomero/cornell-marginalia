@@ -5119,37 +5119,105 @@ export class RhizomeView extends ItemView {
                     const zoomBtn = actionsDiv.createDiv({ cls: 'cornell-action-btn' });
                     setIcon(zoomBtn, 'maximize'); // Ícono de expandir
                     zoomBtn.title = "View Doodle in Fullscreen";
-                    zoomBtn.onClickEvent((e) => {
-                        e.stopPropagation(); // Evita abrir la nota de fondo
-                        
-                        const firstImg = imagesToRender[0];
-                        const cleanName = firstImg.split('|')[0];
-                        const file = this.plugin.app.metadataCache.getFirstLinkpathDest(cleanName, item.file.path);
-                        
-                        if (file) {
-                            const imgSrc = this.plugin.app.vault.getResourcePath(file);
-                            const overlay = document.body.createDiv({ cls: 'cornell-lightbox-overlay' });
-                            const bigImg = overlay.createEl('img', { attr: { src: imgSrc } });
-                            
-                            // 👇 --- corrijo el fondo --- 
-                            bigImg.style.backgroundColor = 'white'; // Dar fondo blanco
-                            bigImg.style.padding = '10px'; // Dar un poco de espacio
-                            bigImg.style.borderRadius = '8px'; // Suavizar bordes
-                            // ------------------------------------
+                    zoomBtn.onClickEvent((ev) => {
+    ev.stopPropagation(); 
+    
+    const firstImg = imagesToRender[0];
+    const cleanName = firstImg.split('|')[0];
+    const file = this.plugin.app.metadataCache.getFirstLinkpathDest(cleanName, item.file.path);
+    
+    if (file) {
+        const imgSrc = this.plugin.app.vault.getResourcePath(file);
+        
+        // Contenedor principal
+        const overlay = document.body.createDiv({ cls: 'cornell-lightbox-overlay' });
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0'; overlay.style.left = '0';
+        overlay.style.width = '100vw'; overlay.style.height = '100vh';
+        overlay.style.backgroundColor = 'rgba(0,0,0,0.85)';
+        overlay.style.zIndex = '999999';
+        overlay.style.display = 'flex';
+        overlay.style.justifyContent = 'center';
+        overlay.style.alignItems = 'center';
+        overlay.style.overflow = 'hidden'; // Vital para el paneo
 
-                            // Inversión inteligente de colores
-                            if (document.body.classList.contains('theme-dark') && cleanName.includes('doodle_')) {
-                                bigImg.style.filter = 'invert(1)';
-                                bigImg.style.opacity = '0.9';
-                            }
+        // 🖼️ Contenedor de la imagen para aplicar transformaciones
+        const imgContainer = overlay.createDiv();
+        imgContainer.style.transition = "transform 0.1s ease-out";
+        imgContainer.style.cursor = "grab";
 
-                            overlay.onclick = () => overlay.remove();
-                            const escListener = (ev: KeyboardEvent) => {
-                                if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escListener); }
-                            };
-                            document.addEventListener('keydown', escListener);
-                        }
-                    });
+        const bigImg = imgContainer.createEl('img', { attr: { src: imgSrc, draggable: 'false' } });
+        bigImg.style.backgroundColor = 'white'; 
+        bigImg.style.padding = '15px'; 
+        bigImg.style.borderRadius = '8px'; 
+        bigImg.style.maxHeight = '90vh';
+        bigImg.style.maxWidth = '90vw';
+        bigImg.style.boxShadow = '0 10px 30px rgba(0,0,0,0.5)';
+
+        if (document.body.classList.contains('theme-dark') && cleanName.includes('doodle_')) {
+            bigImg.style.filter = 'invert(1)';
+            bigImg.style.opacity = '0.9';
+        }
+
+        // 🔍 LÓGICA DE ZOOM Y PANEO
+        let scale = 1;
+        let isDraggingImg = false;
+        let startX = 0, startY = 0;
+        let translateX = 0, translateY = 0;
+
+        const updateTransform = () => {
+            imgContainer.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+        };
+
+        // Rueda del ratón para Zoom
+        overlay.addEventListener("wheel", (e) => {
+            e.preventDefault();
+            if (e.deltaY < 0) scale = Math.min(scale + 0.15, 5); // Acercar (máx 5x)
+            else scale = Math.max(scale - 0.15, 0.5);            // Alejar (mín 0.5x)
+            updateTransform();
+        });
+
+        // Arrastrar para Paneo (Pan)
+        imgContainer.addEventListener("mousedown", (e) => {
+            e.stopPropagation();
+            isDraggingImg = true;
+            imgContainer.style.cursor = "grabbing";
+            imgContainer.style.transition = "none"; // Quitamos la transición para que el arrastre sea instantáneo
+            startX = e.clientX - translateX;
+            startY = e.clientY - translateY;
+        });
+
+        window.addEventListener("mousemove", (e) => {
+            if (!isDraggingImg) return;
+            translateX = e.clientX - startX;
+            translateY = e.clientY - startY;
+            updateTransform();
+        });
+
+        window.addEventListener("mouseup", () => {
+            if (isDraggingImg) {
+                isDraggingImg = false;
+                imgContainer.style.cursor = "grab";
+                imgContainer.style.transition = "transform 0.1s ease-out";
+            }
+        });
+
+        // ❌ Cerrar Lightbox (clic en el fondo negro o presionar Escape)
+        overlay.addEventListener("mousedown", (e) => {
+            if (e.target === overlay) {
+                overlay.remove();
+            }
+        });
+
+        const escListener = (evKey: KeyboardEvent) => {
+            if (evKey.key === 'Escape') { 
+                overlay.remove(); 
+                document.removeEventListener('keydown', escListener); 
+            }
+        };
+        document.addEventListener('keydown', escListener);
+    }
+});
                 }
 
                 // 🚪 CLIC NORMAL EN LA TARJETA (Abre la nota)

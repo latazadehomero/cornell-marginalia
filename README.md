@@ -254,6 +254,87 @@ Cornell Marginalia is designed to keep your hands on the keyboard. Master these 
 
 ---
 
+## 🎨 Custom Templates 
+
+Cornell Marginalia allows you to fully customize how your notes, boards, and captures are exported using your own Markdown templates. You can configure these in the plugin settings under **File & Output Management**.
+
+To use this feature, simply create a standard `.md` file in your vault (e.g., in your `Templates` folder), write your desired layout, and use our dynamic variables. The plugin will automatically replace these variables with the correct context.
+
+### 🧩 Available Variables
+
+Depending on the context (Zettelkasten, Pinboards, or Canvas), you can use the following variables in your templates:
+
+* `{{title}}`: The generated title for the note or board.
+* `{{date}}`: Current date (format: YYYY-MM-DD).
+* `{{time}}`: Current time (format: HH:mm).
+* `{{source_note}}`: **Intelligent Source Link**. 
+    * In *OmniCapture*, it links to the file you are currently reading.
+    * In *Pinboards*, it calculates the most referenced file in your board.
+    * In *Items/Cards*, it creates a direct block-link (`^id`) to the exact line of the original text.
+* `{{text}}`: The actual text or doodle of your marginalia.
+* `{{citation}}`: **Smart Context**. Automatically captures the text you were reading or the blockquote (e.g., from a PDF) located immediately below your marginalia.
+
+
+### 📝 Template Types & Examples
+
+Here are the four types of templates you can configure, along with copy-pasteable examples for your vault.
+
+#### 1. Zettelkasten Template (`zkTemplatePath`)
+Used when you create a new atomic note using the OmniCapture ZK mode.
+
+**Example Template:**
+```md
+# 🗃️ {{title}}
+
+> **Date:** {{date}} | **Time:** {{time}}
+> **Inspired by:** [[{{source_note}}]]
+
+---
+
+```
+
+#### 2. Pinboard Main Template (`pinboardTemplatePath`)
+Defines the header and global structure of your exported Markdown Pinboard.
+
+**Example Template:**
+```md
+# 📌 {{title}}
+
+**🗓️ Compiled on:** {{date}} at {{time}}
+**📚 Dominant Source:** [[{{source_note}}]]
+
+> *This board is a collection of connected marginal notes.*
+
+---
+
+```
+
+#### 3. Pinboard Item Template (`pinboardItemTemplatePath`)
+Defines the structure of **each individual marginalia** inside the exported Markdown Pinboard. If you leave this blank, the plugin will use a clean default list format.
+
+**Example Template:**
+```md
+> [!quote] My idea
+> {{text}}
+>
+> **Original quote:**
+> {{citation}}
+> 
+> 🏷️ Source: {{source_note}}
+```
+
+#### 4. Canvas Item Template (`canvasItemTemplatePath`)
+Controls how the main text card looks in your exported Evidence Boards (Canvas). *(Note: The Canvas automatically draws a connected branch for the `{{citation}}`, so you don't need to include it in this template).*
+
+**Example Template:**
+```md
+- My idea:
+{{text}}
+
+---
+**Source:** {{source_note}}
+```
+
 
 
 ## 📦 Installation

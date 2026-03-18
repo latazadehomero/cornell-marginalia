@@ -1,9 +1,7 @@
 import { setIcon, Notice } from "obsidian";
 import CornellMarginalia from "../main";
-// Asumiendo que exportas CornellNotesView en main.ts
 import { CornellNotesView } from "../main"; 
 
-// Función auxiliar necesaria para guardar la imagen
 function base64ToArrayBuffer(base64: string) {
     const binaryString = window.atob(base64);
     const len = binaryString.length;
@@ -14,23 +12,31 @@ function base64ToArrayBuffer(base64: string) {
     return bytes.buffer;
 }
 
-// 👇 NUEVO MOTOR: Escanea la matriz de píxeles y recorta el espacio vacío
-function getCroppedCanvas(originalCanvas: HTMLCanvasElement, padding: number = 20): HTMLCanvasElement {
+function getHybridCroppedCanvas(originalCanvas: HTMLCanvasElement, bounds: any, padding: number = 20): HTMLCanvasElement {
+    if (bounds.minX === Infinity) return originalCanvas; 
+
     const ctx = originalCanvas.getContext('2d');
     if (!ctx) return originalCanvas;
 
-    const width = originalCanvas.width;
-    const height = originalCanvas.height;
-    const imageData = ctx.getImageData(0, 0, width, height);
+    let startX = Math.max(0, Math.floor(bounds.minX) - padding);
+    let startY = Math.max(0, Math.floor(bounds.minY) - padding);
+    let endX = Math.min(originalCanvas.width, Math.ceil(bounds.maxX) + padding);
+    let endY = Math.min(originalCanvas.height, Math.ceil(bounds.maxY) + padding);
+    
+    const scanW = endX - startX;
+    const scanH = endY - startY;
+
+    if (scanW <= 0 || scanH <= 0) return originalCanvas;
+
+    const imageData = ctx.getImageData(startX, startY, scanW, scanH);
     const data = imageData.data;
 
-    let minX = width, minY = height, maxX = 0, maxY = 0;
+    let minX = scanW, minY = scanH, maxX = 0, maxY = 0;
     let hasContent = false;
 
-    // Escaneamos buscando cualquier píxel que no sea 100% transparente (Alpha > 0)
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const alpha = data[(y * width + x) * 4 + 3];
+    for (let y = 0; y < scanH; y++) {
+        for (let x = 0; x < scanW; x++) {
+            const alpha = data[(y * scanW + x) * 4 + 3];
             if (alpha > 0) {
                 hasContent = true;
                 if (x < minX) minX = x;
@@ -41,30 +47,84 @@ function getCroppedCanvas(originalCanvas: HTMLCanvasElement, padding: number = 2
         }
     }
 
-    // Si el lienzo está vacío, devolvemos el original
-    if (!hasContent) return originalCanvas;
+    if (!hasContent) return originalCanvas; 
 
-    // Aplicamos un pequeño margen (padding) para que el dibujo no quede pegado al borde
     minX = Math.max(0, minX - padding);
     minY = Math.max(0, minY - padding);
-    maxX = Math.min(width, maxX + padding);
-    maxY = Math.min(height, maxY + padding);
+    maxX = Math.min(scanW, maxX + padding);
+    maxY = Math.min(scanH, maxY + padding);
 
     const croppedWidth = maxX - minX;
     const croppedHeight = maxY - minY;
 
-    // Creamos un nuevo lienzo con el tamaño exacto
     const croppedCanvas = document.createElement('canvas');
     croppedCanvas.width = croppedWidth;
     croppedCanvas.height = croppedHeight;
     const croppedCtx = croppedCanvas.getContext('2d');
 
     if (croppedCtx) {
-        // Copiamos solo la región dibujada del lienzo original al nuevo
-        croppedCtx.drawImage(originalCanvas, minX, minY, croppedWidth, croppedHeight, 0, 0, croppedWidth, croppedHeight);
+        croppedCtx.drawImage(
+            originalCanvas, 
+            startX + minX, startY + minY, croppedWidth, croppedHeight, 
+            0, 0, croppedWidth, croppedHeight
+        );
     }
 
     return croppedCanvas;
+}
+
+function getOCROptimizedCanvas(originalCanvas: HTMLCanvasElement, bounds: any): HTMLCanvasElement {
+    const cropped = getHybridCroppedCanvas(originalCanvas, bounds, 30);
+    
+    const scale = 2; 
+    const ocrCanvas = document.createElement('canvas');
+    ocrCanvas.width = cropped.width * scale;
+    ocrCanvas.height = cropped.height * scale;
+    
+    const ctx = ocrCanvas.getContext('2d', { willReadFrequently: true });
+    
+    if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, ocrCanvas.width, ocrCanvas.height);
+        
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(cropped, 0, 0, ocrCanvas.width, ocrCanvas.height);
+
+        const imageData = ctx.getImageData(0, 0, ocrCanvas.width, ocrCanvas.height);
+        const data = imageData.data;
+        
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i+1];
+            const b = data[i+2];
+            const alpha = data[i+3];
+            
+            if (alpha > 20 && (r + g + b) / 3 < 220) {
+                data[i] = 0;
+                data[i+1] = 0;
+                data[i+2] = 0;
+                data[i+3] = 255;
+            } else {
+                data[i] = 255;
+                data[i+1] = 255;
+                data[i+2] = 255;
+                data[i+3] = 255;
+            }
+        }
+        ctx.putImageData(imageData, 0, 0);
+    }
+    return ocrCanvas;
+}
+
+async function loadTesseract(): Promise<any> {
+    if ((window as any).Tesseract) return (window as any).Tesseract;
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+        script.onload = () => resolve((window as any).Tesseract);
+        script.onerror = () => reject(new Error("Error cargando Tesseract. Revisa tu conexión a internet."));
+        document.head.appendChild(script);
+    });
 }
 
 export abstract class CornellAddon {
@@ -79,27 +139,398 @@ export abstract class CornellAddon {
 export class SuperDoodleAddon extends CornellAddon {
     id = "super-doodle";
     name = "Super Doodle 🎨";
-    description = "Transform Zen Doodle into an adjustable-size canvas with panoramic navigation, colors, and adjustable brush size.";
+    description = "Transform Zen Doodle into an adjustable-size canvas with panoramic navigation, colors, and an advanced selection tool.";
 
-    // Guardamos el método original para restaurarlo después
     private originalRenderZenDoodle: Function | null = null;
 
     load(): void {
         this.originalRenderZenDoodle = CornellNotesView.prototype.renderZenDoodle;
         const addonInstance = this;
 
-        // Sobreescribimos el método en el prototipo
         CornellNotesView.prototype.renderZenDoodle = function(container: HTMLElement) {
-            // 'this' aquí hace referencia a la instancia de CornellNotesView
             const view = this as any; 
 
-            // Variables de estado del SuperDoodle
-            let currentTool: 'pen' | 'eraser' | 'hand' = 'pen';
-            let currentColor = '#000000';
-            let currentSize = 4;
-            let isDragging = false;
-            let startX = 0, startY = 0;
-            let scrollLeftStart = 0, scrollTopStart = 0;
+            // =====================================================================
+            // 🧠 1. CORE ENGINE
+            // =====================================================================
+            if (!view.zenCanvasEl) {
+                
+                let currentTool: 'pen' | 'eraser' | 'hand' | 'select' = 'pen';
+                let currentColor = '#000000';
+                let currentSize = 4;
+                
+                let isDragging = false;
+                let isTempPanning = false;
+                let isTempErasing = false;
+                let startX = 0, startY = 0;
+                let scrollLeftStart = 0, scrollTopStart = 0;
+
+                let selectionPhase: 'none' | 'selecting' | 'floating' = 'none';
+                let selX = 0, selY = 0, selW = 0, selH = 0;
+                let floatingCanvas: HTMLCanvasElement | null = null; 
+                let floatDragStartX = 0, floatDragStartY = 0;
+                
+                let strokePoints: {x: number, y: number}[] = [];
+                let lastOverlayBounds = { x: 0, y: 0, w: 0, h: 0 };
+                let drawnBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+
+                let isDrawingFrameScheduled = false;
+                let lastDrawnIndex = 1;
+
+                const updateBounds = (x: number, y: number, r: number) => {
+                    if (x - r < drawnBounds.minX) drawnBounds.minX = x - r;
+                    if (y - r < drawnBounds.minY) drawnBounds.minY = y - r;
+                    if (x + r > drawnBounds.maxX) drawnBounds.maxX = x + r;
+                    if (y + r > drawnBounds.maxY) drawnBounds.maxY = y + r;
+                };
+
+                view.zenCanvasEl = document.createElement("canvas");
+                view.zenCanvasEl.width = 3200; 
+                view.zenCanvasEl.height = 4800;
+                view.zenCtx = view.zenCanvasEl.getContext("2d")!;
+                view.zenCanvasEl.style.backgroundColor = "#ffffff";
+                view.zenCanvasEl.style.display = "block";
+                view.zenCanvasEl.style.touchAction = "none";
+
+                const overlayCanvas = document.createElement("canvas");
+                overlayCanvas.width = view.zenCanvasEl.width;
+                overlayCanvas.height = view.zenCanvasEl.height;
+                overlayCanvas.style.position = "absolute";
+                overlayCanvas.style.top = "0";
+                overlayCanvas.style.left = "0";
+                overlayCanvas.style.pointerEvents = "none"; 
+                const overlayCtx = overlayCanvas.getContext("2d")!;
+
+                const commitFloatingSelection = () => {
+                    if (selectionPhase === 'floating' && floatingCanvas && view.zenCtx && overlayCtx) {
+                        view.zenCtx.globalCompositeOperation = "source-over";
+                        view.zenCtx.drawImage(floatingCanvas, selX, selY);
+                        
+                        updateBounds(selX, selY, 0);
+                        updateBounds(selX + floatingCanvas.width, selY + floatingCanvas.height, 0);
+
+                        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                        selectionPhase = 'none';
+                        floatingCanvas = null; 
+                    }
+                };
+
+                const forceStopAllActions = () => {
+                    if (!view.zenCtx || !view.zenCanvasEl || !overlayCtx || !overlayCanvas) return;
+
+                    if (view.zenIsDrawing) {
+                        if (strokePoints.length > lastDrawnIndex) {
+                            view.zenCtx.beginPath();
+                            const p1_start = strokePoints[lastDrawnIndex - 1];
+                            const p2_start = strokePoints[lastDrawnIndex];
+                            const mid_start = { x: (p1_start.x + p2_start.x) / 2, y: (p1_start.y + p2_start.y) / 2 };
+                            view.zenCtx.moveTo(mid_start.x, mid_start.y);
+
+                            for (let i = lastDrawnIndex + 1; i < strokePoints.length; i++) {
+                                const p2 = strokePoints[i - 1];
+                                const p3 = strokePoints[i];
+                                const mid_next = { x: (p2.x + p3.x) / 2, y: (p2.y + p3.y) / 2 };
+                                view.zenCtx.quadraticCurveTo(p2.x, p2.y, mid_next.x, mid_next.y);
+                            }
+                            view.zenCtx.stroke();
+                        }
+
+                        if (strokePoints.length >= 2) {
+                            const p1 = strokePoints[strokePoints.length - 2];
+                            const p2 = strokePoints[strokePoints.length - 1];
+                            const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+                            
+                            view.zenCtx.beginPath();
+                            view.zenCtx.moveTo(mid.x, mid.y);
+                            view.zenCtx.lineTo(p2.x, p2.y);
+                            view.zenCtx.stroke();
+                        }
+                        
+                        view.zenIsDrawing = false;
+                        strokePoints = [];
+                        lastDrawnIndex = 1;
+                    }
+
+                    if (currentTool === 'select' && selectionPhase === 'selecting') {
+                        const rx = selW < 0 ? selX + selW : selX;
+                        const ry = selH < 0 ? selY + selH : selY;
+                        const rw = Math.abs(selW);
+                        const rh = Math.abs(selH);
+                        selX = rx; selY = ry; selW = rw; selH = rh;
+
+                        if (rw > 5 && rh > 5) {
+                            selectionPhase = 'floating';
+                            const imageData = view.zenCtx.getImageData(selX, selY, selW, selH);
+                            view.zenCtx.clearRect(selX, selY, selW, selH);
+                            
+                            floatingCanvas = document.createElement('canvas');
+                            floatingCanvas.width = selW; 
+                            floatingCanvas.height = selH;
+                            floatingCanvas.getContext('2d')?.putImageData(imageData, 0, 0);
+
+                            overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                            overlayCtx.drawImage(floatingCanvas, selX, selY);
+                            overlayCtx.setLineDash([5, 5]);
+                            overlayCtx.strokeStyle = 'rgba(100, 150, 255, 0.8)';
+                            overlayCtx.strokeRect(selX, selY, selW, selH);
+                            lastOverlayBounds = { x: selX, y: selY, w: selW, h: selH };
+                        } else {
+                            selectionPhase = 'none';
+                            overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                            lastOverlayBounds = { x: 0, y: 0, w: 0, h: 0 };
+                        }
+                    }
+
+                    isDragging = false;
+isTempPanning = false;
+isTempErasing = false; // Reseteamos la goma temporal
+
+// Restablecemos el cursor de forma estricta según la herramienta actual
+if (currentTool === 'hand') view.zenCanvasEl.style.cursor = 'grab';
+else if (currentTool === 'select') view.zenCanvasEl.style.cursor = 'cell';
+else view.zenCanvasEl.style.cursor = 'crosshair'; // <-- FIX: Devuelve el cursor al lápiz/goma normal
+                };
+
+                view.doodleAPI = {
+                    setTool: (t: any) => { forceStopAllActions(); commitFloatingSelection(); currentTool = t; },
+                    getTool: () => currentTool,
+                    setColor: (c: string) => { forceStopAllActions(); commitFloatingSelection(); currentColor = c; },
+                    getColor: () => currentColor,
+                    setSize: (s: number) => { currentSize = s; },
+                    getSize: () => currentSize,
+                    commitSelection: commitFloatingSelection,
+                    getOverlay: () => overlayCanvas,
+                    getBounds: () => drawnBounds,
+                    forceUpdateBounds: updateBounds,
+                    getSelectionPhase: () => selectionPhase,
+                    getFloatingCanvas: () => floatingCanvas,
+                    getSelectionRect: () => ({ x: selX, y: selY, w: selW, h: selH }),
+                    clearSelection: () => {
+                        selectionPhase = 'none';
+                        floatingCanvas = null;
+                        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                    },
+                    fillWhiteRect: (x: number, y: number, w: number, h: number) => {
+                        view.zenCtx.fillStyle = '#ffffff';
+                        view.zenCtx.fillRect(x, y, w, h);
+                    },
+                    resize: (newW: number, newH: number) => {
+                        commitFloatingSelection(); 
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = view.zenCanvasEl.width;
+                        tempCanvas.height = view.zenCanvasEl.height;
+                        tempCanvas.getContext('2d')?.drawImage(view.zenCanvasEl, 0, 0);
+                        
+                        view.zenCanvasEl.width = newW;
+                        view.zenCanvasEl.height = newH;
+                        
+                        overlayCanvas.width = newW;
+                        overlayCanvas.height = newH;
+
+                        view.zenCtx.drawImage(tempCanvas, 0, 0);
+                    },
+                    clear: () => {
+                        view.zenCtx.clearRect(0, 0, view.zenCanvasEl.width, view.zenCanvasEl.height);
+                        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                        selectionPhase = 'none';
+                        drawnBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+                    }
+                };
+
+                const getScrollWrapper = () => view.zenCanvasEl.parentElement as HTMLElement;
+                const getPointerPos = (e: PointerEvent) => {
+                    const rect = view.zenCanvasEl.getBoundingClientRect();
+                    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+                };
+
+                view.zenCanvasEl.addEventListener("contextmenu", (e: Event) => e.preventDefault());
+
+                view.zenCanvasEl.addEventListener("pointerdown", (e: PointerEvent) => {
+    view.zenCanvasEl!.setPointerCapture(e.pointerId);
+    
+    isTempPanning = e.ctrlKey || e.metaKey;
+    isTempErasing = e.shiftKey && !isTempPanning; // Shift para goma (evita colisiones con paneo)
+
+    if (currentTool === 'hand' || isTempPanning) {
+                        isDragging = true;
+                        view.zenCanvasEl.style.cursor = 'grabbing';
+                        startX = e.clientX;
+                        startY = e.clientY;
+                        const sw = getScrollWrapper();
+                        if (sw) {
+                            scrollLeftStart = sw.scrollLeft;
+                            scrollTopStart = sw.scrollTop;
+                        }
+                        return;
+                    }
+
+                    const pos = getPointerPos(e);
+
+                    if (currentTool === 'select') {
+                        if (selectionPhase === 'floating') {
+                            if (pos.x >= selX && pos.x <= selX + selW && pos.y >= selY && pos.y <= selY + selH) {
+                                isDragging = true;
+                                floatDragStartX = pos.x;
+                                floatDragStartY = pos.y;
+                            } else {
+                                commitFloatingSelection();
+                                selectionPhase = 'selecting';
+                                selX = pos.x; selY = pos.y; selW = 0; selH = 0;
+                            }
+                        } else {
+                            selectionPhase = 'selecting';
+                            selX = pos.x; selY = pos.y; selW = 0; selH = 0;
+                        }
+                        return;
+                    }
+
+                    commitFloatingSelection();
+                    view.zenIsDrawing = true;
+                    
+                    // Determinamos dinámicamente si usamos la goma (ya sea por interfaz o por atajo)
+const isEraserActive = currentTool === 'eraser' || isTempErasing;
+const activeSize = isEraserActive ? currentSize * 3 : currentSize;
+
+view.zenCtx.lineWidth = activeSize;
+view.zenCtx.lineCap = "round";
+view.zenCtx.lineJoin = "round";
+
+if (isEraserActive) {
+    view.zenCtx.globalCompositeOperation = "destination-out";
+    view.zenCtx.strokeStyle = "rgba(0,0,0,1)";
+} else {
+    view.zenCtx.globalCompositeOperation = "source-over";
+    view.zenCtx.strokeStyle = currentColor;
+}
+                    view.zenCtx.fillStyle = view.zenCtx.strokeStyle;
+
+                    strokePoints = [pos, pos];
+                    lastDrawnIndex = 1;
+                    updateBounds(pos.x, pos.y, activeSize);
+
+                    view.zenCtx.beginPath();
+                    view.zenCtx.arc(pos.x, pos.y, activeSize / 2, 0, Math.PI * 2);
+                    view.zenCtx.fill();
+                });
+
+                window.addEventListener('blur', forceStopAllActions);
+                document.addEventListener('pointerup', (e) => {
+                    if (e.target !== view.zenCanvasEl) forceStopAllActions();
+                });
+
+                view.zenCanvasEl.addEventListener("pointermove", (e: PointerEvent) => {
+    
+    // 🛡️ REFUERZO ANTI-BUG: Movido al inicio antes de los 'return'
+    // Esto asegura que el cursor se actualice en hover para TODAS las herramientas
+    // y evita el error de "Type Narrowing" de TypeScript.
+    if (!view.zenIsDrawing && !isDragging) {
+        if (e.ctrlKey || e.metaKey) view.zenCanvasEl.style.cursor = 'grab';
+        else if (e.shiftKey) view.zenCanvasEl.style.cursor = 'cell'; // Feedback visual de goma
+        else if (currentTool === 'hand') view.zenCanvasEl.style.cursor = 'grab';
+        else if (currentTool === 'select') view.zenCanvasEl.style.cursor = 'cell';
+        else view.zenCanvasEl.style.cursor = 'crosshair';
+    }
+
+    if ((currentTool === 'hand' || isTempPanning) && isDragging) {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const sw = getScrollWrapper();
+        if (sw) {
+            sw.scrollLeft = scrollLeftStart - dx;
+            sw.scrollTop = scrollTopStart - dy;
+        }
+        return;
+    }
+
+    // Para la selección, el evento principal es suficiente
+    if (currentTool === 'select') {
+        const pos = getPointerPos(e);
+        overlayCtx.clearRect(lastOverlayBounds.x - 10, lastOverlayBounds.y - 10, lastOverlayBounds.w + 20, lastOverlayBounds.h + 20);
+
+        if (selectionPhase === 'selecting') {
+            selW = pos.x - selX;
+            selH = pos.y - selY;
+            
+            overlayCtx.setLineDash([5, 5]);
+            overlayCtx.strokeStyle = 'var(--interactive-accent)';
+            overlayCtx.lineWidth = 2;
+            overlayCtx.strokeRect(selX, selY, selW, selH);
+            
+            lastOverlayBounds = { x: selX, y: selY, w: selW, h: selH };
+        } else if (selectionPhase === 'floating' && isDragging && floatingCanvas) {
+            const dx = pos.x - floatDragStartX;
+            const dy = pos.y - floatDragStartY;
+            selX += dx; selY += dy;
+            floatDragStartX = pos.x; floatDragStartY = pos.y;
+            
+            overlayCtx.drawImage(floatingCanvas, selX, selY);
+            overlayCtx.setLineDash([5, 5]);
+            overlayCtx.strokeStyle = 'rgba(100, 150, 255, 0.8)';
+            overlayCtx.strokeRect(selX, selY, floatingCanvas.width, floatingCanvas.height);
+            
+            lastOverlayBounds = { x: selX, y: selY, w: floatingCanvas.width, h: floatingCanvas.height };
+        }
+        return; // El return temprano ahora es seguro porque el cursor ya se actualizó.
+    }
+
+                    
+
+if (view.zenIsDrawing) {
+    // Calculamos el tamaño correcto durante el movimiento
+    const isEraserActive = currentTool === 'eraser' || isTempErasing;
+    const activeSize = isEraserActive ? currentSize * 3 : currentSize;
+                        
+                        // 🔥 MAGIA DE HARDWARE: EVENT COALESCING
+                        // Extraemos todos los sub-eventos de alta frecuencia que el DOM intentó resumir
+                        const coalescedEvents = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+                        
+                        for (const coalescedEvent of coalescedEvents) {
+                            const pos = getPointerPos(coalescedEvent);
+                            strokePoints.push(pos);
+                            updateBounds(pos.x, pos.y, activeSize);
+                        }
+
+                        if (!isDrawingFrameScheduled) {
+                            isDrawingFrameScheduled = true;
+                            
+                            requestAnimationFrame(() => {
+                                isDrawingFrameScheduled = false;
+                                
+                                if (view.zenIsDrawing && strokePoints.length > lastDrawnIndex) {
+                                    view.zenCtx.beginPath();
+                                    
+                                    const p1_start = strokePoints[lastDrawnIndex - 1];
+                                    const p2_start = strokePoints[lastDrawnIndex];
+                                    const mid_start = { x: (p1_start.x + p2_start.x) / 2, y: (p1_start.y + p2_start.y) / 2 };
+                                    
+                                    view.zenCtx.moveTo(mid_start.x, mid_start.y);
+
+                                    for (let i = lastDrawnIndex + 1; i < strokePoints.length; i++) {
+                                        const p2 = strokePoints[i - 1];
+                                        const p3 = strokePoints[i];
+                                        const mid_next = { x: (p2.x + p3.x) / 2, y: (p2.y + p3.y) / 2 };
+                                        
+                                        view.zenCtx.quadraticCurveTo(p2.x, p2.y, mid_next.x, mid_next.y);
+                                    }
+                                    
+                                    view.zenCtx.stroke();
+                                    lastDrawnIndex = strokePoints.length - 1; 
+                                }
+                            });
+                        }
+                    }
+                });
+
+                view.zenCanvasEl.addEventListener("pointerup", (e: PointerEvent) => {
+                    view.zenCanvasEl!.releasePointerCapture(e.pointerId);
+                    forceStopAllActions();
+                });
+            }
+
+            // =====================================================================
+            // 🎨 2. INTERFAZ DE USUARIO 
+            // =====================================================================
+            const api = view.doodleAPI;
 
             const zenContainer = container.createDiv({ cls: 'cornell-zen-container' });
             zenContainer.style.display = 'flex';
@@ -108,7 +539,6 @@ export class SuperDoodleAddon extends CornellAddon {
             zenContainer.style.gap = '15px';
             zenContainer.style.padding = '10px 0';
 
-            // --- 1. TOP BAR (Botonera) ---
             const topBar = zenContainer.createDiv();
             topBar.style.display = 'flex';
             topBar.style.justifyContent = 'space-between';
@@ -116,7 +546,6 @@ export class SuperDoodleAddon extends CornellAddon {
             topBar.style.flexWrap = 'wrap';
             topBar.style.gap = '10px';
 
-            // GRUPO IZQUIERDO: Herramientas
             const leftGrp = topBar.createDiv({ attr: { style: 'display:flex; gap:6px; align-items:center;' } });
             
             const cancelBtn = leftGrp.createEl('button', { title: 'Return to Board' });
@@ -136,10 +565,11 @@ export class SuperDoodleAddon extends CornellAddon {
             const eraserBtn = leftGrp.createEl('button', { title: 'Eraser' });
             setIcon(eraserBtn, "eraser");
 
-            // GRUPO CENTRAL: Colores y Tamaño
+            const selectBtn = leftGrp.createEl('button', { title: 'Lasso / Select Tool' });
+            setIcon(selectBtn, "box-select");
+
             const centerGrp = topBar.createDiv({ attr: { style: 'display:flex; gap:10px; align-items:center;' } });
             
-            // 📐 NUEVO: Selector de Tamaño de Lienzo (Redimensionar sin perder el dibujo)
             const canvasSizeSelect = centerGrp.createEl('select', { title: 'Canvas Resolution' });
             canvasSizeSelect.style.background = 'transparent';
             canvasSizeSelect.style.color = 'var(--text-normal)';
@@ -148,48 +578,23 @@ export class SuperDoodleAddon extends CornellAddon {
             
             canvasSizeSelect.add(new Option("Size: 1x (Normal)", "800x1200"));
             canvasSizeSelect.add(new Option("Size: 2x (Large)", "1600x2400"));
-            canvasSizeSelect.add(new Option("Size: 4x (Massive)", "3200x4800", true, true)); // Seleccionado por defecto
+            canvasSizeSelect.add(new Option("Size: 4x (Massive)", "3200x4800", true, true)); 
             canvasSizeSelect.add(new Option("Size: 8x (Insane)", "6400x9600"));
             
             canvasSizeSelect.onchange = (e) => {
-                if (!view.zenCanvasEl || !view.zenCtx) return;
                 const [newW, newH] = (e.target as HTMLSelectElement).value.split('x').map(Number);
-                
-                // 1. Clonar el dibujo actual a un lienzo invisible temporal
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = view.zenCanvasEl.width;
-                tempCanvas.height = view.zenCanvasEl.height;
-                tempCanvas.getContext('2d')?.drawImage(view.zenCanvasEl, 0, 0);
-                
-                // 2. Cambiar el tamaño (esto por defecto borra el lienzo nativo)
-                view.zenCanvasEl.width = newW;
-                view.zenCanvasEl.height = newH;
-                
-                // 3. Restaurar la configuración del pincel que también se borró
-                view.zenCtx.lineCap = "round";
-                view.zenCtx.lineJoin = "round";
-                view.zenCtx.lineWidth = currentTool === 'eraser' ? currentSize * 3 : currentSize;
-                view.zenCtx.strokeStyle = currentColor;
-                view.zenCtx.globalCompositeOperation = currentTool === 'eraser' ? "destination-out" : "source-over";
-                
-                // 4. Volver a pegar el dibujo original sobre el nuevo lienzo
-                view.zenCtx.drawImage(tempCanvas, 0, 0);
-                
+                api.resize(newW, newH);
                 new Notice(`📐 Canvas resized to ${newW}x${newH}`);
             };
 
-            // Slider de tamaño de pincel
             const sizeSlider = centerGrp.createEl('input', { type: 'range' });
-            sizeSlider.min = "1"; sizeSlider.max = "50"; sizeSlider.value = "4";
+            sizeSlider.min = "1"; sizeSlider.max = "50"; 
+            sizeSlider.value = api.getSize().toString(); 
             sizeSlider.style.width = "80px";
             sizeSlider.oninput = (e) => {
-                currentSize = parseInt((e.target as HTMLInputElement).value);
-                if (currentTool === 'pen' && view.zenCtx) view.zenCtx.lineWidth = currentSize;
-                // De paso, mejoramos la goma para que se escale con el slider también
-                else if (currentTool === 'eraser' && view.zenCtx) view.zenCtx.lineWidth = currentSize * 3; 
+                api.setSize(parseInt((e.target as HTMLInputElement).value));
             };
 
-            // Paleta de colores
             const colors = ['#000000', '#ff4d4d', '#3366ff', '#00cc66'];
             const colorBtns: HTMLElement[] = [];
             colors.forEach(c => {
@@ -198,63 +603,159 @@ export class SuperDoodleAddon extends CornellAddon {
                 cBtn.style.borderRadius = '50%';
                 cBtn.style.backgroundColor = c;
                 cBtn.style.cursor = 'pointer';
-                cBtn.style.border = c === currentColor ? '2px solid var(--text-normal)' : '2px solid transparent';
+                cBtn.style.border = c === api.getColor() ? '2px solid var(--text-normal)' : '2px solid transparent';
+                
                 cBtn.onclick = () => {
-                    currentColor = c;
-                    currentTool = 'pen';
-                    if (view.zenCtx) {
-                        view.zenCtx.strokeStyle = currentColor;
-                        view.zenCtx.globalCompositeOperation = "source-over";
-                        view.zenCtx.lineWidth = currentSize;
-                    }
+                    api.setColor(c);
+                    api.setTool('pen');
                     updateToolUI();
-                    colorBtns.forEach(btn => btn.style.border = '2px solid transparent');
-                    cBtn.style.border = '2px solid var(--text-normal)';
                 };
                 colorBtns.push(cBtn);
             });
-            // 👇 PEGA EL CÓDIGO AQUÍ 👇
-            // 🚨 ESCUCHA DE EVENTOS: El bolígrafo rojo de auditoría
-            view.containerEl.addEventListener('cornell-force-red-pen', () => {
-                currentTool = 'pen';
-                currentColor = '#ff4d4d'; // Forzamos rojo
-                
-                if (view.zenCtx) {
-                    view.zenCtx.strokeStyle = currentColor;
-                    view.zenCtx.globalCompositeOperation = "source-over";
-                    view.zenCtx.lineWidth = currentSize;
-                }
-                
-                updateToolUI(); 
-                
-                // Actualizamos la bolita de color visualmente
-                colorBtns.forEach(btn => btn.style.border = '2px solid transparent');
-                const redBtn = colorBtns.find(b => b.style.backgroundColor === 'rgb(255, 77, 77)' || b.style.backgroundColor === '#ff4d4d' || b.style.backgroundColor === 'var(--color-red)');
-                if (redBtn) redBtn.style.border = '2px solid var(--text-normal)';
-            });
-            // 👆 HASTA AQUÍ 👆
 
-            // --- GRUPO DERECHO: Acciones ---
+            view.containerEl.addEventListener('cornell-force-red-pen', () => {
+                api.setColor('#ff4d4d');
+                api.setTool('pen');
+                updateToolUI(); 
+            });
+
             const rightGrp = topBar.createDiv({ attr: { style: 'display:flex; gap:10px;' } });
             
             const clearBtn = rightGrp.createEl('button', { title: 'Clear Canvas' });
             setIcon(clearBtn, "trash-2");
             clearBtn.style.boxShadow = 'none';
             clearBtn.onclick = () => {
-                if (view.zenCanvasEl && view.zenCtx) {
-                    view.zenCtx.clearRect(0, 0, view.zenCanvasEl.width, view.zenCanvasEl.height);
+                api.clear();
+            };
+
+            // BOTÓN MÁGICO OCR CON WHITELIST
+            const ocrBtn = rightGrp.createEl('button', { text: '🔤 OCR', title: 'Convert handwriting to editable text' });
+            ocrBtn.style.backgroundColor = 'var(--background-modifier-success)';
+            ocrBtn.style.color = 'var(--text-on-accent)';
+            
+            ocrBtn.onclick = async () => {
+                let ocrTargetCanvas: HTMLCanvasElement;
+                let startX = 0, startY = 0, boxWidth = 300, boxHeight = 100;
+                let isSelectionMode = false;
+
+                const phase = api.getSelectionPhase();
+                const fCanvas = api.getFloatingCanvas();
+                const rect = api.getSelectionRect();
+
+                if (phase === 'floating' && fCanvas) {
+                    isSelectionMode = true;
+                    startX = rect.x; startY = rect.y; boxWidth = rect.w; boxHeight = rect.h;
+                    ocrTargetCanvas = getOCROptimizedCanvas(fCanvas, {minX: 0, minY: 0, maxX: fCanvas.width, maxY: fCanvas.height});
+                } else {
+                    const bounds = api.getBounds();
+                    if (bounds.minX === Infinity) {
+                        new Notice("¡El lienzo está vacío! Dibuja o selecciona letras primero.");
+                        return;
+                    }
+                    startX = bounds.minX; startY = bounds.minY; boxWidth = bounds.maxX - bounds.minX; boxHeight = bounds.maxY - bounds.minY;
+                    ocrTargetCanvas = getOCROptimizedCanvas(view.zenCanvasEl, bounds);
+                    api.commitSelection();
+                }
+
+                const notice = new Notice("⏳ Iniciando motor OCR... (Puede tardar la primera vez)", 0);
+                
+                try {
+                    const Tesseract = await loadTesseract();
+                    const imageData = ocrTargetCanvas.toDataURL("image/png");
+                    notice.setMessage("🔍 Analizando trazos...");
+                    
+                    const worker = await Tesseract.createWorker('spa+eng');
+                    await worker.setParameters({
+                        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789áéíóúÁÉÍÓÚñÑ.,¿?¡!-() '
+                    });
+                    
+                    const result = await worker.recognize(imageData);
+                    const text = result.data.text.trim();
+                    await worker.terminate();
+                    
+                    if (text) {
+                        await navigator.clipboard.writeText(text);
+                        
+                        if (isSelectionMode) api.clearSelection();
+                        else api.fillWhiteRect(startX - 10, startY - 10, boxWidth + 20, boxHeight + 20);
+
+                        const input = document.createElement("textarea");
+                        input.value = text;
+                        input.style.position = "absolute";
+                        input.style.left = `${startX}px`;
+                        input.style.top = `${startY}px`;
+                        input.style.width = `${Math.max(250, boxWidth + 50)}px`;
+                        input.style.height = `${Math.max(60, boxHeight + 50)}px`;
+                        input.style.background = "#ffffff";
+                        input.style.color = api.getColor() === '#ffffff' ? '#000000' : api.getColor();
+                        
+                        const fontSize = Math.max(24, api.getSize() * 6);
+                        input.style.fontSize = `${fontSize}px`;
+                        input.style.fontFamily = "sans-serif";
+                        input.style.border = "2px dashed var(--interactive-accent)";
+                        input.style.borderRadius = "8px";
+                        input.style.padding = "10px";
+                        input.style.outline = "none";
+                        input.style.resize = "both";
+                        input.style.zIndex = "1000";
+                        
+                        scrollWrapper.appendChild(input);
+                        input.focus();
+
+                        const finalizeText = () => {
+                            const finalStr = input.value;
+                            if (finalStr) {
+                                const finalX = parseInt(input.style.left) + 10;
+                                const finalY = parseInt(input.style.top) + 10;
+                                const finalW = parseInt(input.style.width);
+                                const finalH = parseInt(input.style.height);
+
+                                api.fillWhiteRect(parseInt(input.style.left), parseInt(input.style.top), finalW, finalH);
+
+                                view.zenCtx.font = `${fontSize}px sans-serif`;
+                                view.zenCtx.fillStyle = input.style.color;
+                                view.zenCtx.textBaseline = "top";
+                                
+                                const lines = finalStr.split('\n');
+                                let currentY = finalY;
+                                const lineHeight = fontSize * 1.2;
+                                
+                                lines.forEach(line => {
+                                    view.zenCtx.fillText(line, finalX, currentY);
+                                    api.forceUpdateBounds(finalX, currentY, fontSize * line.length); 
+                                    currentY += lineHeight;
+                                });
+                            }
+                            input.remove();
+                        };
+
+                        input.onblur = finalizeText;
+                        input.onkeydown = (e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                input.blur();
+                            }
+                        };
+
+                        notice.hide();
+                        new Notice(`✅ ¡Texto inyectado! Edítalo y presiona Enter para fijarlo.`, 6000);
+                    } else {
+                        notice.hide();
+                        new Notice("❌ No se reconoció ningún texto claro.");
+                    }
+                } catch (error) {
+                    console.error("OCR Error:", error);
+                    notice.hide();
+                    new Notice("⚠️ Hubo un error procesando el OCR.");
                 }
             };
 
-// 1. BOTÓN ATTACH (Va al Board)
             const attachBtn = rightGrp.createEl('button', { text: '📌 Attach to Board', title: 'Save and add to Pinboard' });
             attachBtn.onclick = async () => {
-                if (!view.zenCanvasEl) return;
+                api.commitSelection();
                 attachBtn.innerText = '⏳...';
                 
-                // 1. Pasamos el lienzo gigante por la guillotina inteligente
-                const croppedCanvas = getCroppedCanvas(view.zenCanvasEl);
-                // 2. Extraemos la imagen solo de ese nuevo lienzo recortado
+                const croppedCanvas = getHybridCroppedCanvas(view.zenCanvasEl, api.getBounds());
                 const dataUrl = croppedCanvas.toDataURL("image/png");
                 const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
                 const arrayBuffer = base64ToArrayBuffer(base64Data);
@@ -292,22 +793,19 @@ export class SuperDoodleAddon extends CornellAddon {
                 
                 new Notice('🎨 Super Doodle attached to Board!');
                 view.isZenMode = false;
-                if (view.zenCtx) view.zenCtx.clearRect(0, 0, view.zenCanvasEl.width, view.zenCanvasEl.height);
+                api.clear();
                 view.applyFiltersAndRender();
             };
 
-            // 2. BOTÓN OMNI-CAPTURE (Va al Inbox/Destino)
             const zapBtn = rightGrp.createEl('button', { text: '⚡ Omni-Capture', cls: 'mod-cta', title: 'Save instantly to Omni-Capture Destination' });
             zapBtn.style.backgroundColor = 'var(--interactive-accent)';
             zapBtn.style.color = 'var(--text-on-accent)';
             
             zapBtn.onclick = async () => {
-                if (!view.zenCanvasEl) return;
+                api.commitSelection();
                 zapBtn.innerText = '⏳ Saving...';
                 
-                // 1. Pasamos el lienzo gigante por la guillotina inteligente
-                const croppedCanvas = getCroppedCanvas(view.zenCanvasEl);
-                // 2. Extraemos la imagen solo de ese nuevo lienzo recortado
+                const croppedCanvas = getHybridCroppedCanvas(view.zenCanvasEl, api.getBounds());
                 const dataUrl = croppedCanvas.toDataURL("image/png");
                 const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
                 const arrayBuffer = base64ToArrayBuffer(base64Data);
@@ -327,7 +825,7 @@ export class SuperDoodleAddon extends CornellAddon {
                     }
 
                     view.isZenMode = false;
-                    if (view.zenCtx) view.zenCtx.clearRect(0, 0, view.zenCanvasEl.width, view.zenCanvasEl.height);
+                    api.clear();
                     view.applyFiltersAndRender();
                     
                 } catch (error) {
@@ -337,13 +835,14 @@ export class SuperDoodleAddon extends CornellAddon {
                 }
             };
 
-            // Lógica de actualización de UI
             const updateToolUI = () => {
                 handBtn.removeClass("mod-cta");
                 penBtn.removeClass("mod-cta");
                 eraserBtn.removeClass("mod-cta");
+                selectBtn.removeClass("mod-cta");
                 if (view.zenCanvasEl) view.zenCanvasEl.style.cursor = 'crosshair';
 
+                const currentTool = api.getTool();
                 if (currentTool === 'hand') {
                     handBtn.addClass("mod-cta");
                     if (view.zenCanvasEl) view.zenCanvasEl.style.cursor = 'grab';
@@ -351,115 +850,45 @@ export class SuperDoodleAddon extends CornellAddon {
                     penBtn.addClass("mod-cta");
                 } else if (currentTool === 'eraser') {
                     eraserBtn.addClass("mod-cta");
+                } else if (currentTool === 'select') {
+                    selectBtn.addClass("mod-cta");
+                    if (view.zenCanvasEl) view.zenCanvasEl.style.cursor = 'cell';
                 }
+
+                const currentColor = api.getColor();
+                colorBtns.forEach(btn => btn.style.border = '2px solid transparent');
+                const activeColorBtn = colorBtns.find(b => b.style.backgroundColor === currentColor || b.style.backgroundColor === `rgb(${parseInt(currentColor.slice(1,3), 16)}, ${parseInt(currentColor.slice(3,5), 16)}, ${parseInt(currentColor.slice(5,7), 16)})`);
+                if (activeColorBtn) activeColorBtn.style.border = '2px solid var(--text-normal)';
             };
 
-            handBtn.onclick = () => { currentTool = 'hand'; updateToolUI(); };
-            
-            penBtn.onclick = () => {
-                currentTool = 'pen';
-                if (view.zenCtx) {
-                    view.zenCtx.globalCompositeOperation = "source-over";
-                    view.zenCtx.lineWidth = currentSize;
-                    view.zenCtx.strokeStyle = currentColor;
-                }
-                updateToolUI();
-            };
+            handBtn.onclick = () => { api.setTool('hand'); updateToolUI(); };
+            selectBtn.onclick = () => { api.setTool('select'); updateToolUI(); };
+            penBtn.onclick = () => { api.setTool('pen'); updateToolUI(); };
+            eraserBtn.onclick = () => { api.setTool('eraser'); updateToolUI(); };
 
-            eraserBtn.onclick = () => {
-                currentTool = 'eraser';
-                if (view.zenCtx) {
-                    view.zenCtx.globalCompositeOperation = "destination-out";
-                    view.zenCtx.lineWidth = currentSize * 3; // La goma es más grande
-                }
-                updateToolUI();
-            };
-
-            // --- 2. CONTENEDOR CON SCROLL (LA MAGIA DEL PANEO) ---
             const scrollWrapper = zenContainer.createDiv();
             scrollWrapper.style.flexGrow = "1";
-            scrollWrapper.style.overflow = "auto"; // Permite navegar por el lienzo gigante
+            scrollWrapper.style.overflow = "auto";
             scrollWrapper.style.border = "2px dashed var(--background-modifier-border)";
             scrollWrapper.style.borderRadius = "8px";
-            scrollWrapper.style.backgroundColor = "var(--background-secondary-alt)"; // Fondo gris detrás del lienzo
+            scrollWrapper.style.backgroundColor = "var(--background-secondary-alt)"; 
+            scrollWrapper.style.position = "relative"; 
 
-            if (!view.zenCanvasEl) {
-                view.zenCanvasEl = document.createElement("canvas");
-                // ¡LIENZO MASIVO! (3200x4800 es 4x el original)
-                view.zenCanvasEl.width = 3200; 
-                view.zenCanvasEl.height = 4800;
-                
-                view.zenCtx = view.zenCanvasEl.getContext("2d")!;
-                view.zenCtx.lineCap = "round";
-                view.zenCtx.lineJoin = "round";
-                
-                // Aplicar estado inicial
-                view.zenCtx.lineWidth = currentSize;
-                view.zenCtx.strokeStyle = currentColor; 
-                
-                view.zenCanvasEl.style.backgroundColor = "#ffffff";
-                view.zenCanvasEl.style.display = "block";
-                view.zenCanvasEl.style.touchAction = "none";
-                updateToolUI(); // Establecer cursor inicial
-
-                // Como el canvas ahora tiene el tamaño real en píxeles CSS, el cálculo es directo
-                const getPointerPos = (e: PointerEvent) => {
-                    const rect = view.zenCanvasEl!.getBoundingClientRect();
-                    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-                };
-
-                view.zenCanvasEl.addEventListener("pointerdown", (e: PointerEvent) => {
-                    if (currentTool === 'hand') {
-                        isDragging = true;
-                        view.zenCanvasEl!.style.cursor = 'grabbing';
-                        startX = e.clientX;
-                        startY = e.clientY;
-                        scrollLeftStart = scrollWrapper.scrollLeft;
-                        scrollTopStart = scrollWrapper.scrollTop;
-                    } else {
-                        view.zenIsDrawing = true;
-                        const pos = getPointerPos(e);
-                        view.zenCtx!.beginPath();
-                        view.zenCtx!.moveTo(pos.x, pos.y);
-                    }
-                });
-
-                view.zenCanvasEl.addEventListener("pointermove", (e: PointerEvent) => {
-                    if (currentTool === 'hand' && isDragging) {
-                        const dx = e.clientX - startX;
-                        const dy = e.clientY - startY;
-                        scrollWrapper.scrollLeft = scrollLeftStart - dx;
-                        scrollWrapper.scrollTop = scrollTopStart - dy;
-                    } else if (view.zenIsDrawing) {
-                        const pos = getPointerPos(e);
-                        view.zenCtx!.lineTo(pos.x, pos.y);
-                        view.zenCtx!.stroke();
-                    }
-                });
-
-                const stopAction = () => {
-                    view.zenIsDrawing = false;
-                    isDragging = false;
-                    if (currentTool === 'hand') view.zenCanvasEl!.style.cursor = 'grab';
-                };
-
-                view.zenCanvasEl.addEventListener("pointerup", stopAction);
-                view.zenCanvasEl.addEventListener("pointerout", stopAction);
-                view.zenCanvasEl.addEventListener("pointercancel", stopAction);
-            }
-            
             scrollWrapper.appendChild(view.zenCanvasEl);
+            scrollWrapper.appendChild(api.getOverlay());
             
-            // Centrar el scroll al abrir (opcional, para empezar a dibujar en el medio)
+            updateToolUI();
+
             setTimeout(() => {
-                scrollWrapper.scrollLeft = (3200 - scrollWrapper.clientWidth) / 2;
-                scrollWrapper.scrollTop = (4800 - scrollWrapper.clientHeight) / 2;
+                if (scrollWrapper.scrollLeft === 0 && scrollWrapper.scrollTop === 0) {
+                    scrollWrapper.scrollLeft = (view.zenCanvasEl.width - scrollWrapper.clientWidth) / 2;
+                    scrollWrapper.scrollTop = (view.zenCanvasEl.height - scrollWrapper.clientHeight) / 2;
+                }
             }, 10);
         };
     }
 
     unload(): void {
-        // Devolvemos el método a su estado original para no romper nada
         if (this.originalRenderZenDoodle) {
             CornellNotesView.prototype.renderZenDoodle = this.originalRenderZenDoodle as any;
         }

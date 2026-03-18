@@ -143,8 +143,28 @@ export class OmniCaptureManager {
                 await this.plugin.ensureFolderExists(folderPath); 
                 fileName = `${folderPath}/${fileName}`; 
             }
-            const header = this.plugin.settings.zkMode ? `# 🗃️ ${finalDestName}\n` : `# 📥 ${finalDestName}\n`; 
-            await this.app.vault.create(fileName, header + finalMd); 
+            let header = this.plugin.settings.zkMode ? `# 🗃️ ${finalDestName}\n` : `# 📥 ${finalDestName}\n`;
+            
+            if (this.plugin.settings.zkMode && this.plugin.settings.zkTemplatePath) {
+                // 🧠 INTELIGENCIA ZK: Leemos qué archivo tiene abierto el usuario ahora mismo
+                const activeFile = this.app.workspace.getActiveFile();
+                const activeSourceName = activeFile ? activeFile.basename : "No Active Source";
+
+                // @ts-ignore
+                const dateStr = window.moment().format('YYYY-MM-DD');
+                // @ts-ignore
+                const timeStr = window.moment().format('HH:mm');
+                
+                const templateData = await this.plugin.getTemplateContent(this.plugin.settings.zkTemplatePath, {
+                    title: finalDestName,
+                    date: dateStr,
+                    time: timeStr,
+                    source_note: activeSourceName // 🎯 Inyectamos inteligentemente el archivo activo
+                });
+                
+                if (templateData) header = templateData; 
+            } 
+            await this.app.vault.create(fileName, header + finalMd);
         }
         
         new Notice(`⚡ Capture injected into ${finalDestName}`);
@@ -199,9 +219,13 @@ interface CornellSettings {
     ignoredHighlightTexts: string;
     zkMode: boolean;
     zkFolder: string;
+    zkTemplatePath: string;
     doodleFolder: string;
     canvasFolder: string;
     pinboardFolder: string;
+    pinboardTemplatePath: string;
+    pinboardItemTemplatePath: string;
+    canvasItemTemplatePath: string;
     omniCaptureFolder: string;
     responsiveMarginalia: boolean;
     responsiveThreshold: number;
@@ -260,9 +284,13 @@ const DEFAULT_SETTINGS: CornellSettings = {
     ignoredHighlightTexts: '⚠  Switch to EXCALIDRAW VIEW in the MORE OPTIONS menu of this document. ⚠', 
     zkMode: false,
     zkFolder: 'Zettelkasten',
+    zkTemplatePath: '',
     doodleFolder: 'Marginalia Attachments',
     canvasFolder: 'Evidence Boards',
     pinboardFolder: 'Pinboards',
+    pinboardTemplatePath: '',
+    pinboardItemTemplatePath: '',
+    canvasItemTemplatePath: '',
     omniCaptureFolder: '',
     responsiveMarginalia: false,
     responsiveThreshold: 850,
@@ -1122,8 +1150,28 @@ class OmniCaptureModal extends Modal {
                     fileName = `${folderPath}/${fileName}`; 
                 }
 
-                const header = this.plugin.settings.zkMode ? `# 🗃️ ${finalDestName}\n` : `# 📥 ${finalDestName}\n`; 
-                await this.app.vault.create(fileName, header + finalMd); 
+                let header = this.plugin.settings.zkMode ? `# 🗃️ ${finalDestName}\n` : `# 📥 ${finalDestName}\n`;
+            
+            if (this.plugin.settings.zkMode && this.plugin.settings.zkTemplatePath) {
+                // 🧠 INTELIGENCIA ZK: Leemos qué archivo tiene abierto el usuario ahora mismo
+                const activeFile = this.app.workspace.getActiveFile();
+                const activeSourceName = activeFile ? activeFile.basename : "No Active Source";
+
+                // @ts-ignore
+                const dateStr = window.moment().format('YYYY-MM-DD');
+                // @ts-ignore
+                const timeStr = window.moment().format('HH:mm');
+                
+                const templateData = await this.plugin.getTemplateContent(this.plugin.settings.zkTemplatePath, {
+                    title: finalDestName,
+                    date: dateStr,
+                    time: timeStr,
+                    source_note: activeSourceName // 🎯 Inyectamos inteligentemente el archivo activo
+                });
+                
+                if (templateData) header = templateData; 
+            } 
+            await this.app.vault.create(fileName, header + finalMd);
             }
             new Notice(`✅ Capture injected into ${finalDestName}`);
             // --- 🎮 MOTOR DE EXPERIENCIA (GAMIFICACIÓN) ---
@@ -2907,8 +2955,71 @@ review_stage: 1
         const folder = this.plugin.settings.pinboardFolder.trim();
         await this.plugin.ensureFolderExists(folder);
         const fileName = folder ? `${folder}/Pinboard_${dateStr}.md` : `Pinboard_${dateStr}.md`;
-        // @ts-ignore
-        let content = `# ● Pinboard Session\n*Exported on: ${window.moment().format('YYYY-MM-DD HH:mm')}*\n\n---\n\n`;
+
+        // 🧠 NUEVO: ALGORITMO PARA DESCUBRIR LA FUENTE PRINCIPAL
+        let dominantSource = "Multiple Sources";
+        
+        // Si estamos en un PDF, esa es la fuente absoluta
+        if (this.isZotlikeMode && this.activePdfName) {
+            dominantSource = this.activePdfName;
+        } else {
+            // Concurso de popularidad de notas
+            const sourceCounts: Record<string, number> = {};
+            let maxCount = 0;
+            let topSource = "";
+
+            for (const item of this.pinboardItems) {
+                // Ignoramos títulos, doodles o texto manual porque no tienen un archivo origen ('file')
+                if (!item.isTitle && !item.isCustom && item.file && item.file.basename) {
+                    const basename = item.file.basename;
+                    sourceCounts[basename] = (sourceCounts[basename] || 0) + 1;
+                    
+                    if (sourceCounts[basename] > maxCount) {
+                        maxCount = sourceCounts[basename];
+                        topSource = basename;
+                    }
+                }
+            }
+
+            if (topSource) {
+                // Si encontramos un ganador, lo usamos
+                dominantSource = topSource;
+            } else {
+                // Si el tablero es puro texto manual y dibujos sin origen de bóveda
+                dominantSource = "Custom Board"; 
+            }
+        }
+
+        // 👇
+        // 👇
+        let content = "";
+        
+        if (this.plugin.settings.pinboardTemplatePath) {
+             // @ts-ignore
+            content = await this.plugin.getTemplateContent(this.plugin.settings.pinboardTemplatePath, {
+                title: `Pinboard_${dateStr}`,
+                // @ts-ignore
+                date: window.moment().format('YYYY-MM-DD'),
+                // @ts-ignore
+                time: window.moment().format('HH:mm'),
+                source_note: dominantSource // 🎯 FIX: Ahora sí usa el algoritmo inteligente
+            });
+        }
+
+        // Si la plantilla falló o el usuario no configuró ninguna, usamos el diseño clásico por defecto
+        if (!content) {
+            // @ts-ignore
+            content = `# ● Pinboard Session\n*Exported on: ${window.moment().format('YYYY-MM-DD HH:mm')}*\n\n---\n\n`;
+        }
+
+        // 🧠 1. LEER LA PLANTILLA DEL ÍTEM (Fuera del bucle por rendimiento)
+        let itemTemplateRaw = "";
+        if (this.plugin.settings.pinboardItemTemplatePath) {
+            const templateFile = this.app.metadataCache.getFirstLinkpathDest(this.plugin.settings.pinboardItemTemplatePath, "");
+            if (templateFile instanceof TFile) {
+                itemTemplateRaw = await this.app.vault.read(templateFile);
+            }
+        }
 
         for (const item of this.pinboardItems) {
             if (item.isTitle) {
@@ -2917,11 +3028,13 @@ review_stage: 1
                 continue; 
             }
             if (item.isCustom) {
-                // 🦴 NODO ESQUELETO
+                // 🦴 NODO ESQUELETO (Preservado de tu código original)
                 const indentSpaces = "  ".repeat(item.indentLevel || 0);
                 content += `${indentSpaces}- ${item.text}\n\n`;
                 continue;
             }
+            
+            // 🛡️ PRESERVADO: Tu lógica de blockId para no romper las conexiones de la bóveda
             let targetId = item.blockId;
             if (!targetId) {
                 targetId = Math.random().toString(36).substring(2, 8);
@@ -2929,20 +3042,58 @@ review_stage: 1
                 await this.injectBackgroundBlockId(item.file, item.line, targetId);
             }
 
-            const fileContent = await this.plugin.app.vault.cachedRead(item.file);
-            const lines = fileContent.split('\n');
-            let contextText = lines[item.line] || '';
-            contextText = contextText.replace(/%%[><](.*?)%%/g, '').trim();
+            // 🕵️‍♂️ CAZADOR DE CITAS Y CONTEXTO
+            let citation = "";
+            let contextText = "";
             
-            if (contextText.length > 0 && !contextText.includes(`^${targetId}`)) {
-                contextText += ` ^${targetId}`;
+            if (item.file && item.line !== undefined) {
+                const fileContent = await this.plugin.app.vault.cachedRead(item.file);
+                const lines = fileContent.split('\n');
+                
+                // Línea original donde está la marginalia
+                contextText = lines[item.line] || '';
+                contextText = contextText.replace(/%%[><](.*?)%%/g, '').trim();
+                
+                // Buscar la cita en bloque (ej. de un PDF) debajo
+                let searchIdx = item.line + 1; 
+                while (searchIdx < lines.length) {
+                    const lineStr = lines[searchIdx].trim();
+                    if (lineStr.startsWith('>')) {
+                        citation += `${lineStr}\n`; 
+                    } else if (lineStr.startsWith('^') || lineStr === '') {
+                        // Ignoramos anclas y vacíos
+                    } else {
+                        break; 
+                    }
+                    searchIdx++;
+                }
             }
 
-            content += `Margin Note: ${item.text}\n\n`;
-            if (contextText.length > 0) {
-                content += `${contextText}\n\n`;
+            // Enlace con ancla al bloque exacto preservado
+            const sourceLink = item.file ? `[[${item.file.basename}#^${targetId}|${item.file.basename}]]` : "Custom";
+
+            // 🎨 3. RENDERIZADO BASADO EN PLANTILLA PERSONALIZADA
+            if (itemTemplateRaw) {
+                let currentItemContent = itemTemplateRaw;
+                currentItemContent = currentItemContent.replace(/{{text}}/g, item.text);
+                
+                // Si hay cita de PDF, usamos la cita. Si no, usamos el texto de la línea original.
+                const finalCitation = citation ? citation.trim() : contextText;
+                currentItemContent = currentItemContent.replace(/{{citation}}/g, finalCitation);
+                
+                currentItemContent = currentItemContent.replace(/{{source_note}}/g, sourceLink);
+                
+                content += `${currentItemContent}\n\n`;
+            } else {
+                // FALLBACK: Diseño limpio sin plantilla configurada
+                content += `${item.text}\n\n`; 
+                if (citation) {
+                    content += `${citation}\n`; 
+                } else if (contextText) {
+                    content += `${contextText}\n`;
+                }
+                content += `*— 🔗 ${sourceLink}*\n\n---\n\n`; 
             }
-            content += `From: [[${item.file.basename}#^${targetId}|${item.file.basename}]]\n\n---\n\n`;
         }
 
         try {
@@ -2954,7 +3105,7 @@ review_stage: 1
             new Notice('Error creating Pinboard file. Check console.');
         }
     }
-// 🌳 NUEVA FUNCIÓN: Exportador al Portapapeles para Mindmaps (Excalidraw)
+// 🌳 NUEVA FUNCIÓN MEJORADA: Exportador al Portapapeles para Mindmaps (Excalidraw)
     async exportMindmap() {
         if (this.pinboardItems.length === 0) {
             new Notice('El Board está vacío.');
@@ -2972,7 +3123,6 @@ review_stage: 1
                 const indentSpaces = "\t".repeat(item.indentLevel || 0);
                 content += `${indentSpaces}- ${item.text}\n`;
             } else {
-                // Creamos los espacios de sangría base según el nivel en el corcho
                 const indentSpaces = "\t".repeat(item.indentLevel || 0);
                 
                 let targetId = item.blockId;
@@ -2982,25 +3132,58 @@ review_stage: 1
                     await this.injectBackgroundBlockId(item.file, item.line, targetId);
                 }
 
-                // 🧠 DESACOPLAMIENTO DE IMÁGENES PARA EXCALIDRAW
+                // 🧠 1. DESACOPLAMIENTO DE IMÁGENES PARA EXCALIDRAW
                 const imgRegex = /img:\s*\[\[(.*?)\]\]/i;
                 const match = item.rawText.match(imgRegex);
                 const cleanText = item.rawText.replace(imgRegex, '').trim();
 
-                if (match) {
-                    const imageName = match[1]; // Extraemos solo el nombre (ej. doodle.png|180)
+                // 🕵️‍♂️ 2. CAZADOR DE CONTEXTO (Integrado para Excalidraw)
+                let contextText = "";
+                if (item.file && item.line !== undefined) {
+                    const fileContent = await this.plugin.app.vault.cachedRead(item.file);
+                    const lines = fileContent.split('\n');
                     
-                    if (cleanText.length > 0) {
-                        // 1. Tiene texto e imagen: El texto es el padre (con link), la imagen la hija pura
-                        content += `${indentSpaces}- [[${item.file.basename}#^${targetId}|${cleanText}]]\n`;
-                        content += `${indentSpaces}\t- ![[${imageName}]]\n`;
-                    } else {
-                        // 2. 🎯 SOLO IMAGEN: Imprimimos la imagen directamente como nodo, SIN link y SIN texto fantasma
-                        content += `${indentSpaces}- ![[${imageName}]]\n`;
+                    let originalLine = lines[item.line] || '';
+                    originalLine = originalLine.replace(/%%[><](.*?)%%/g, '').trim();
+                    originalLine = originalLine.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
+                    
+                    if (!originalLine && item.line > 0) {
+                        originalLine = lines[item.line - 1].trim();
                     }
-                } else {
-                    // 3. Es solo texto normal
-                    content += `${indentSpaces}- [[${item.file.basename}#^${targetId}|${item.rawText}]]\n`;
+
+                    let searchIdx = item.line + 1; 
+                    let citation = "";
+                    while (searchIdx < lines.length) {
+                        const lineStr = lines[searchIdx].trim();
+                        if (lineStr.startsWith('>')) citation += `${lineStr}\n`; 
+                        else if (lineStr.startsWith('^') || lineStr === '') {} 
+                        else break; 
+                        searchIdx++;
+                    }
+                    contextText = citation ? citation.trim() : originalLine;
+                }
+
+                // 🏗️ 3. CONSTRUCCIÓN DEL ÁRBOL MARKDOWN ESTRICTO
+
+                // A. Nodo Padre (La idea principal de la Marginalia)
+                if (cleanText.length > 0) {
+                    content += `${indentSpaces}- [[${item.file.basename}#^${targetId}|${cleanText}]]\n`;
+                } else if (match) {
+                    // Si solo es un dibujo sin texto, le ponemos un nombre genérico para que tenga enlace
+                    content += `${indentSpaces}- [[${item.file.basename}#^${targetId}|🎨 Doodle]]\n`;
+                }
+
+                // B. Sub-nodo: La Imagen (Si existe)
+                if (match) {
+                    const imageName = match[1];
+                    content += `${indentSpaces}\t- ![[${imageName}]]\n`;
+                }
+
+                // C. Sub-nodo: El Contexto / Cita (Si existe)
+                if (contextText) {
+                    // Limpiamos los saltos de línea para que Excalidraw no divida el nodo en pedazos
+                    const cleanContext = contextText.replace(/\n/g, ' '); 
+                    content += `${indentSpaces}\t-  ${cleanContext}\n`;
                 }
             }
         }
@@ -3013,7 +3196,8 @@ review_stage: 1
             console.error(error);
         }
     }
-    // 🎨 NUEVO MOTOR: Generador Automático de Canvas (Tablero de Evidencia)
+    
+    // 🎨 NUEVO MOTOR: Generador Automático de Canvas (Tablero de Evidencia) con Plantillas
     async exportCanvas() {
         if (this.pinboardItems.length === 0) return;
 
@@ -3022,6 +3206,15 @@ review_stage: 1
         const folder = this.plugin.settings.canvasFolder.trim();
         await this.plugin.ensureFolderExists(folder);
         const fileName = folder ? `${folder}/EvidenceBoard_${dateStr}.canvas` : `EvidenceBoard_${dateStr}.canvas`;
+
+        // 🧠 1. LEER LA PLANTILLA DE LA TARJETA PRINCIPAL
+        let canvasTemplateRaw = "";
+        if (this.plugin.settings.canvasItemTemplatePath) {
+            const templateFile = this.app.metadataCache.getFirstLinkpathDest(this.plugin.settings.canvasItemTemplatePath, "");
+            if (templateFile instanceof TFile) {
+                canvasTemplateRaw = await this.app.vault.read(templateFile);
+            }
+        }
 
         const nodes: any[] = [];
         const edges: any[] = [];
@@ -3072,8 +3265,18 @@ review_stage: 1
                 // Convertimos img:[[archivo.png]] a ![[archivo.png]] para que Canvas lo dibuje
                 canvasNoteContent = canvasNoteContent.replace(/img:\s*\[\[(.*?)\]\]/gi, '![[$1]]');
 
-                // 📌 1. NODO MARGINALIA
-                const noteText = `**Marginalia:**\n${canvasNoteContent}\n\n[[${item.file.basename}#^${targetId}|🔗 Origin]]`;
+                // 📌 1. NODO MARGINALIA (AHORA CON MOTOR DE PLANTILLAS)
+                const sourceLink = `[[${item.file.basename}#^${targetId}|🔗 Origin]]`;
+                let noteText = "";
+                
+                if (canvasTemplateRaw) {
+                    noteText = canvasTemplateRaw;
+                    noteText = noteText.replace(/{{text}}/g, canvasNoteContent);
+                    noteText = noteText.replace(/{{source_note}}/g, sourceLink);
+                } else {
+                    // Fallback clásico
+                    noteText = `**Marginalia:**\n${canvasNoteContent}\n\n${sourceLink}`;
+                }
                 
                 // Si la nota tiene un doodle, hacemos la tarjeta más alta para que quepa bien
                 const nodeHeight = hasImage ? 320 : 140;
@@ -3088,35 +3291,38 @@ review_stage: 1
                 parentAtLevel[indent] = nodeId;
 
                 // 📚 3. EXTRAER EL TEXTO DEL CONTEXTO (BLOQUE COMPLETO)
-const fileContent = await this.plugin.app.vault.cachedRead(item.file);
-const lines = fileContent.split('\n');
+                const fileContent = await this.plugin.app.vault.cachedRead(item.file);
+                const lines = fileContent.split('\n');
 
-let startLine = item.line;
-let endLine = item.line;
+                let startLine = item.line;
+                let endLine = item.line;
 
-// Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
-while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
-    startLine--;
-}
-// Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
-while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
-    endLine++;
-}
+                // Subimos hasta encontrar una línea vacía o el inicio de un bloque (```)
+                while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) {
+                    startLine--;
+                }
+                // Bajamos hasta encontrar una línea vacía o el fin de un bloque (```)
+                while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) {
+                    endLine++;
+                }
 
-let contextText = '';
-for (let i = startLine; i <= endLine; i++) {
-    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
-    
-    // Ignoramos las etiquetas de código para que el Canvas se vea limpio
-    if (cleanLine.startsWith('```')) continue;
-    
-    if (cleanLine) {
-        contextText += cleanLine + '\n';
-    }
-}
-contextText = contextText.trim();
+                let contextText = '';
+                for (let i = startLine; i <= endLine; i++) {
+                    let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                    
+                    // Limpiamos identificadores de bloque residuales (^id) para que el Canvas quede limpio
+                    cleanLine = cleanLine.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
 
-                // 📄 4. NODO CONTEXTO
+                    // Ignoramos las etiquetas de código para que el Canvas se vea limpio
+                    if (cleanLine.startsWith('```')) continue;
+                    
+                    if (cleanLine) {
+                        contextText += cleanLine + '\n';
+                    }
+                }
+                contextText = contextText.trim();
+
+                // 📄 4. NODO CONTEXTO (LA RAMA)
                 if (contextText) {
                     const contextNodeId = genId();
                     nodes.push({ id: contextNodeId, type: "text", text: `> ${contextText}`, x: baseX + 400, y: currentY - 20, width: 450, height: Math.max(180, nodeHeight) });
@@ -3135,7 +3341,6 @@ contextText = contextText.trim();
             const newFile = await this.plugin.app.vault.create(fileName, canvasData);
             await this.plugin.app.workspace.getLeaf(true).openFile(newFile);
             new Notice('🎨 Evidence Board created successfully!');
-            // Opcional: Vaciar corcho -> this.pinboardItems = []; this.applyFiltersAndRender();
         } catch (error) {
             new Notice('Error creating Canvas file. Check console.');
             console.error(error);
@@ -4198,6 +4403,16 @@ export class CornellSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings(); 
                 })
             );
+        new Setting(containerEl)
+            .setName('Zettelkasten Template Path')
+            .setDesc('Optional: Path to a markdown file to use as a template (e.g., Templates/ZK.md). Supports {{title}}, {{date}}, {{time}}.')
+            .addText(t => t
+                .setValue(this.plugin.settings.zkTemplatePath)
+                .onChange(async (v) => { 
+                    this.plugin.settings.zkTemplatePath = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
 
         new Setting(containerEl)
             .setName('Doodles Folder')
@@ -4228,6 +4443,36 @@ export class CornellSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.pinboardFolder)
                 .onChange(async (v) => { 
                     this.plugin.settings.pinboardFolder = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
+        new Setting(containerEl)
+            .setName('Pinboards Template Path')
+            .setDesc('Optional: Path to a markdown file to use as a template for exported Boards.')
+            .addText(t => t
+                .setValue(this.plugin.settings.pinboardTemplatePath)
+                .onChange(async (v) => { 
+                    this.plugin.settings.pinboardTemplatePath = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
+        new Setting(containerEl)
+            .setName('Pinboards Item Template Path')
+            .setDesc('Optional: Template for each individual marginalia in the board. Supports {{text}}, {{citation}}, and {{source_note}}.')
+            .addText(t => t
+                .setValue(this.plugin.settings.pinboardItemTemplatePath)
+                .onChange(async (v) => { 
+                    this.plugin.settings.pinboardItemTemplatePath = v; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
+        new Setting(containerEl)
+            .setName('Canvas Item Template Path')
+            .setDesc('Optional: Template for the main marginalia node in the Evidence Board. Supports {{text}} and {{source_note}}.')
+            .addText(t => t
+                .setValue(this.plugin.settings.canvasItemTemplatePath)
+                .onChange(async (v) => { 
+                    this.plugin.settings.canvasItemTemplatePath = v; 
                     await this.plugin.saveSettings(); 
                 })
             );
@@ -6445,7 +6690,27 @@ export default class CornellMarginalia extends Plugin {
             }
         }
     }
-
+// 📄 MOTOR DE PLANTILLAS
+    async getTemplateContent(templatePath: string, variables: Record<string, string>): Promise<string> {
+        if (!templatePath || templatePath.trim() === "") return "";
+        
+        // Obtenemos el archivo de la bóveda usando la ruta
+        const file = this.app.metadataCache.getFirstLinkpathDest(templatePath, "");
+        if (file instanceof TFile) {
+            let content = await this.app.vault.read(file);
+            
+            // Reemplazamos las variables dinámicas
+            for (const [key, value] of Object.entries(variables)) {
+                // Usamos Regex con bandera 'g' para reemplazar TODAS las ocurrencias
+                const regex = new RegExp(`{{${key}}}`, 'g');
+                content = content.replace(regex, value);
+            }
+            return content + "\n"; // Aseguramos un salto de línea al final
+        }
+        
+        new Notice(`⚠️ Template not found: ${templatePath}`);
+        return "";
+    }
     async onload() {
         await this.loadSettings();
         this.captureManager = new OmniCaptureManager(this.app, this);

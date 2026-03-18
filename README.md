@@ -268,7 +268,7 @@ Depending on the context (Zettelkasten, Pinboards, or Canvas), you can use the f
 * `{{date}}`: Current date (format: YYYY-MM-DD).
 * `{{time}}`: Current time (format: HH:mm).
 * `{{source_note}}`: **Intelligent Source Link**. 
-    * In *OmniCapture*, it links to the file you are currently reading.
+    * In *OmniCapture*, (only when ZK Mode is enabled) it links to the file you are currently reading.
     * In *Pinboards*, it calculates the most referenced file in your board.
     * In *Items/Cards*, it creates a direct block-link (`^id`) to the exact line of the original text.
 * `{{text}}`: The actual text or doodle of your marginalia.

@@ -1704,3 +1704,32 @@ body.cornell-responsive-mode .workspace-leaf-content {
     container-type: inline-size;
     container-name: editor-container;
 }
+/* ======================================================
+   🧠 MODO ACTIVE RECALL: BLUR PARA EXPLICACIONES (SPOILER-FREE)
+   ====================================================== */
+
+/* Ocultamos el texto de las explicaciones si el ajuste está activo */
+body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target .is-explanatory,
+body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target .is-explanatory *:not(img) {
+    color: transparent !important;
+    text-shadow: 0 0 12px var(--text-accent) !important;
+    transition: color 0.3s ease, text-shadow 0.3s ease;
+    cursor: help;
+}
+
+/* Difuminamos las imágenes que estén dentro de la explicación */
+body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target .is-explanatory img {
+    filter: blur(8px) opacity(0.6) !important;
+    transition: filter 0.3s ease, opacity 0.3s ease !important;
+}
+
+/* HOVER: Recuperamos la visión al pasar el mouse por encima de la explicación */
+body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target .is-explanatory:hover,
+body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target .is-explanatory:hover * {
+    color: inherit !important;
+    text-shadow: none !important;
+}
+
+body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target .is-explanatory:hover img {
+    filter: blur(0px) opacity(1) !important;
+}

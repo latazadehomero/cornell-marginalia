@@ -10,6 +10,7 @@ import { PdfDoodleAddon } from "./addons/PdfDoodleAddon";
 import { SuperDoodleAddon } from "./addons/super-doodle";
 import { BlurtingAddon, BlurtingSetupModal } from "./addons/BlurtingAddon";
 import { MargidoroAddon } from "./addons/margidoro";
+import { AnkiSyncAddon } from "./addons/AnkiSyncAddon";
 
 // =================================================================
 // 🧠 EL CEREBRO PÚBLICO: OMNI CAPTURE MANAGER
@@ -230,9 +231,12 @@ interface CornellSettings {
     responsiveMarginalia: boolean;
     responsiveThreshold: number;
     addons: Record<string, boolean>; 
+    ankiRecentDecks: string[];
+    ankiTagToDeck: Record<string, string>;
     userStats: UserStats;
     enablePdfDoodle: boolean;
     adaptiveMode: boolean;
+    blurExplanatoryMarginalia: boolean;
     margidoro: {
         workTime: number;
         shortBreak: number;
@@ -294,12 +298,14 @@ const DEFAULT_SETTINGS: CornellSettings = {
     omniCaptureFolder: '',
     responsiveMarginalia: false,
     responsiveThreshold: 850,
+    blurExplanatoryMarginalia: false,
     // 👇 LOS VALORES POR DEFECTO PARA LOS NUEVOS USUARIOS
     addons: {
         "gamification-profile": false, // Por defecto viene apagado
         "custom-background": false,
         "rhizome-time-machine": false,
-        "super-doodle": false // 🎨
+        "super-doodle": false, // 🎨
+        "anki-sync": false
     },
     userStats: {
         xp: 0,
@@ -312,6 +318,9 @@ const DEFAULT_SETTINGS: CornellSettings = {
         margidoroPending: []
     },
     enablePdfDoodle: false,
+    // recuerda mazos
+    ankiRecentDecks: [],
+    ankiTagToDeck: {},
     //  VALORES POR DEFECTO MARGIDORO
     margidoro: {
         workTime: 25,
@@ -331,13 +340,21 @@ class MarginNoteWidget extends WidgetType {
         readonly app: App, 
         readonly customColor: string | null,
         readonly sourcePath: string = "",
-        readonly direction: string = ">"
+        readonly direction: string = ">",
+        readonly isFlashcard: boolean = false // <--- ESTE PARÁMETRO
     ) { super(); }
 
     toDOM(view: EditorView): HTMLElement {
         const div = document.createElement("div");
         div.className = "cm-cornell-margin";
         
+        // Asignamos la clase correcta para el blur
+        if (this.isFlashcard) {
+            div.classList.add("is-flashcard");
+        } else {
+            div.classList.add("is-explanatory");
+        }
+
         if (this.customColor) {
             div.style.borderColor = this.customColor;
             div.style.color = this.customColor;       
@@ -480,7 +497,10 @@ if (isCode && !isCornellBlock) continue;
 
                 if (isCursorInside) continue;
 
-                if (noteContent.trim().endsWith(";;")) {
+                // 👇 1. IDENTIFICAR SI ES FLASHCARD
+                const isFlashcard = noteContent.trim().endsWith(";;");
+
+                if (isFlashcard) {
                     decorationsData.push({
                         from: line.from, to: line.from, type: 0,
                         dec: Decoration.line({ class: "cornell-flashcard-target" })
@@ -489,6 +509,11 @@ if (isCode && !isCornellBlock) continue;
 
                 let matchedColor = null;
                 let finalNoteText = noteContent.trim(); 
+                
+                // 👇 2. LIMPIAR LOS ';;' PARA QUE NO SE VEAN
+                if (isFlashcard) {
+                    finalNoteText = finalNoteText.slice(0, -2).trim(); 
+                }
                 
                 for (const tag of settings.tags) {
                     if (finalNoteText.startsWith(tag.prefix)) {
@@ -505,7 +530,8 @@ if (isCode && !isCornellBlock) continue;
                     to: line.from, 
                     type: 1,
                     dec: Decoration.widget({
-                        widget: new MarginNoteWidget(finalNoteText, app, matchedColor, file?.path || "", direction),
+                        // 👇 3. PASAMOS 'isFlashcard' COMO ÚLTIMO PARÁMETRO
+                        widget: new MarginNoteWidget(finalNoteText, app, matchedColor, file?.path || "", direction, isFlashcard),
                         side: -1 
                     })
                 });
@@ -4330,6 +4356,17 @@ export class CornellSettingTab extends PluginSettingTab {
                     });
                 })
             );
+        new Setting(containerEl)
+    .setName('Blur Explanatory Marginalias')
+    .setDesc('🧠 Active Recall: Blurs regular marginalias that share a line with a flashcard, preventing spoilers.')
+    .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.blurExplanatoryMarginalia)
+        .onChange(async (value) => {
+            this.plugin.settings.blurExplanatoryMarginalia = value;
+            await this.plugin.saveSettings();
+            this.plugin.updateStyles(); // Aplicamos el cambio en vivo
+        })
+    );
 
         // ======================================================
         // 🏷️ COLOR TAGS
@@ -4780,7 +4817,91 @@ export class CornellSettingTab extends PluginSettingTab {
                 .addText(t => t.setValue(this.plugin.settings.margidoro.reviewReminderTime)
                     .onChange(async (v) => { this.plugin.settings.margidoro.reviewReminderTime = v; await this.plugin.saveSettings(); }));
         }
+        // --- ADDON: ANKI SYNC ---
+        new Setting(containerEl)
+            .setName(this.plugin.ankiSyncAddon.name)
+            .setDesc(this.plugin.ankiSyncAddon.description)
+            .addToggle(toggle => toggle
+                // Leemos el estado actual desde los settings
+                .setValue(this.plugin.settings.addons[this.plugin.ankiSyncAddon.id] || false)
+                .onChange(async (value) => {
+                    // Guardamos el nuevo estado
+                    this.plugin.settings.addons[this.plugin.ankiSyncAddon.id] = value;
+                    await this.plugin.saveSettings();
+
+                    // Encendemos o apagamos el motor dinámicamente
+                    if (value) {
+                        this.plugin.ankiSyncAddon.load();
+                        new Notice(`✅ ${this.plugin.ankiSyncAddon.name} enabled`);
+                    } else {
+                        this.plugin.ankiSyncAddon.unload();
+                        new Notice(`❌ ${this.plugin.ankiSyncAddon.name} disabled`);
+                    }
+                })
+            );
+            // --- CONFIGURACIÓN DE RUTAS ANKI (Solo si el addon está activo) ---
+        if (this.plugin.settings.addons["anki-sync"]) {
+            containerEl.createEl('h4', { text: '🏷️ Anki Auto-Sync (Tag Mappings)' });
+            
+            new Setting(containerEl)
+                .setName('Add Tag Mapping')
+                .setDesc('Map an Obsidian tag to an Anki deck. Only notes with these tags will be bulk-synced.')
+                .addButton(btn => btn
+                    .setButtonText('+ Add Route')
+                    .setCta()
+                    .onClick(async () => {
+                        // Crea una ruta vacía por defecto
+                        this.plugin.settings.ankiTagToDeck['#new-tag'] = 'Deck::New';
+                        await this.plugin.saveSettings();
+                        this.display(); // Recarga la vista
+                    })
+                );
+
+            // Dibujamos cada ruta guardada
+            for (const [tag, deck] of Object.entries(this.plugin.settings.ankiTagToDeck)) {
+                const mappingDiv = containerEl.createDiv({ attr: { style: 'display: flex; gap: 10px; margin-bottom: 10px; align-items: center; background: var(--background-secondary); padding: 10px; border-radius: 8px;' }});
+                
+                const tagInput = mappingDiv.createEl('input', { type: 'text', value: tag });
+                tagInput.placeholder = "#etiqueta";
+                tagInput.style.width = "150px";
+                
+                mappingDiv.createSpan({ text: '➔', attr: { style: 'color: var(--text-muted);' } });
+
+                const deckInput = mappingDiv.createEl('input', { type: 'text', value: deck });
+                deckInput.placeholder = "Deck::Subdeck";
+                deckInput.style.flexGrow = "1";
+
+                // Botón de Guardar (Icono de disco flexible o check)
+                const saveBtn = mappingDiv.createEl('button');
+                setIcon(saveBtn, 'save'); // Ícono nativo de Lucide
+                saveBtn.title = "Save mapping";
+                saveBtn.onclick = async () => {
+                    let newTag = tagInput.value.trim();
+                    if (!newTag.startsWith('#')) newTag = '#' + newTag; 
+                    const newDeck = deckInput.value.trim();
+                    
+                    // Si cambió el nombre de la etiqueta, borramos la vieja
+                    if (newTag !== tag) delete this.plugin.settings.ankiTagToDeck[tag];
+                    
+                    this.plugin.settings.ankiTagToDeck[newTag] = newDeck;
+                    await this.plugin.saveSettings();
+                    new Notice('✅ Mapping saved');
+                    this.display();
+                };
+
+                // Botón de Eliminar (Icono de basurero)
+                const delBtn = mappingDiv.createEl('button');
+                setIcon(delBtn, 'trash-2'); // Ícono nativo de Lucide
+                delBtn.title = "Delete mapping";
+                delBtn.onclick = async () => {
+                    delete this.plugin.settings.ankiTagToDeck[tag];
+                    await this.plugin.saveSettings();
+                    this.display();
+                };
+            }
         }
+        }
+    
 
         
 }
@@ -6674,6 +6795,7 @@ export default class CornellMarginalia extends Plugin {
     public superDoodleAddon!: SuperDoodleAddon;
     public blurtingAddon!: BlurtingAddon;
     public margidoroAddon!: MargidoroAddon;
+    public ankiSyncAddon!: AnkiSyncAddon;
    
     // 📁 MOTOR DE CREACIÓN DE CARPETAS
     async ensureFolderExists(folderPath: string) {
@@ -6760,6 +6882,12 @@ export default class CornellMarginalia extends Plugin {
         if (this.settings.addons && this.settings.addons["margidoro"]) {
             this.margidoroAddon.load();
         }
+
+        this.ankiSyncAddon = new AnkiSyncAddon(this);
+    // Revisar si está encendido en settings (asumiendo que agregaste la opción)
+    if (this.settings.addons && this.settings.addons["anki-sync"]) {
+        this.ankiSyncAddon.load();
+    }
         // 👆 FIN DE LA CONEXIÓN DE ADDONS
 
         this.updateStyles(); 
@@ -7240,6 +7368,13 @@ this.registerEvent(
                 // Crear la caja de la marginalia
                 const marginDiv = document.createElement("div");
                 marginDiv.className = "cm-cornell-margin reading-mode-margin cornell-editorial-margin";
+
+                // 👇 CLASIFICADOR INTELIGENTE PARA READING VIEW
+if (isFlashcard) {
+    marginDiv.classList.add("is-flashcard");
+} else {
+    marginDiv.classList.add("is-explanatory");
+}
                 
                 if (matchedColor) {
                     marginDiv.style.setProperty('border-color', matchedColor, 'important');
@@ -7373,6 +7508,13 @@ this.registerEvent(
 
                     const marginDiv = document.createElement("div");
                     marginDiv.className = "cm-cornell-margin reading-mode-margin"; 
+
+                    // 👇 CLASIFICADOR INTELIGENTE PARA READING VIEW
+if (isFlashcard) {
+    marginDiv.classList.add("is-flashcard");
+} else {
+    marginDiv.classList.add("is-explanatory");
+}
                     
                     if (matchedColor) {
                         marginDiv.style.setProperty('border-color', matchedColor, 'important');
@@ -7665,6 +7807,11 @@ this.registerEvent(
             document.body.classList.remove('cornell-responsive-mode');
             dynamicStyle.innerText = '';
         }
+    if (this.settings.blurExplanatoryMarginalia) {
+    document.body.classList.add('cornell-blur-explanatory');
+} else {
+    document.body.classList.remove('cornell-blur-explanatory');
+}
     }
     async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
     async saveSettings() { await this.saveData(this.settings); }

@@ -14,13 +14,18 @@ export class CornellDashboardView extends ItemView {
     }
 
     // copiar el puerto de tasknote 
-    async getTaskNotesPort(): Promise<number> {
+    async getTaskNotesConfig(): Promise<{ port: number, token: string }> {
         try {
-            const configStr = await this.plugin.app.vault.adapter.read(".obsidian/plugins/tasknotes/data.json");
+            // Usar this.app en SubjectEditorModal y this.plugin.app en CornellDashboardView
+            const appInstance = (this as any).plugin ? (this as any).plugin.app : (this as any).app;
+            const configStr = await appInstance.vault.adapter.read(".obsidian/plugins/tasknotes/data.json");
             const config = JSON.parse(configStr);
-            return config.apiPort || 8080;
+            return {
+                port: config.apiPort || 8080,
+                token: config.apiAuthToken || "" // Rescatamos el token si existe
+            };
         } catch (e) {
-            return 8080;
+            return { port: 8080, token: "" };
         }
     }
     //  HASTA AQUÍ 
@@ -225,25 +230,26 @@ export class CornellDashboardView extends ItemView {
         todayLine.createDiv({ text: "Hoy", attr: { style: "position: absolute; top: -15px; left: -10px; font-size: 0.75em; color: var(--interactive-accent); font-weight: bold; background: var(--background-primary); padding: 0 4px;" }});
         // FETCH DE TASKNOTES AQUÍ 
         
+        
         const tlLayout = dbData.workspaces?.[dbData.activeWorkspaceIndex || 0] || dbData.layout || {};
 
         if (tlLayout.timelineTaskNotes) {
             (async () => {
                 try {
-                    const port = await this.getTaskNotesPort();
+                    const config = await this.getTaskNotesConfig();
+                    const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+                    if (config.token) reqHeaders['Authorization'] = `Bearer ${config.token}`;
 
                     // @ts-ignore
                     const timelineTasksRes = await requestUrl({ 
-                        url: `http://127.0.0.1:${port}/api/tasks/query`,
+                        url: `http://127.0.0.1:${config.port}/api/tasks/query`,
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: reqHeaders, // 👈 Cabeceras seguras
                         body: JSON.stringify({
                             type: "group",
                             id: "root",
                             conjunction: "and",
-                            children: [
-                                { type: "condition", id: "c1", property: "status", operator: "is", value: "open" }
-                            ]
+                            children: [ { type: "condition", id: "c1", property: "status", operator: "is", value: "open" } ]
                         })
                     });
 
@@ -865,20 +871,20 @@ async onOpen() {
             // FETCH DE TASKNOTES AQUÍ 
             if (layout.plannerTaskNotes) {
                 try {
-                    const port = await this.getTaskNotesPort();
+                    const config = await this.getTaskNotesConfig();
+                    const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+                    if (config.token) reqHeaders['Authorization'] = `Bearer ${config.token}`;
 
                     // @ts-ignore
                     const tasksResponse = await requestUrl({
-                        url: `http://127.0.0.1:${port}/api/tasks/query`,
+                        url: `http://127.0.0.1:${config.port}/api/tasks/query`,
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: reqHeaders, // 👈 Cabeceras seguras
                         body: JSON.stringify({
                             type: "group",
                             id: "root",
                             conjunction: "and",
-                            children: [
-                                { type: "condition", id: "c1", property: "status", operator: "is", value: "open" }
-                            ]
+                            children: [ { type: "condition", id: "c1", property: "status", operator: "is", value: "open" } ]
                         })
                     });
 
@@ -1786,14 +1792,18 @@ export class SubjectEditorModal extends Modal {
         this.onSave = onSave;
     }
     // FUNCIÓN LECTORA DE PUERTO 
-    async getTaskNotesPort(): Promise<number> {
+    async getTaskNotesConfig(): Promise<{ port: number, token: string }> {
         try {
-            // Leemos el archivo de configuración del otro plugin directamente
-            const configStr = await this.app.vault.adapter.read(".obsidian/plugins/tasknotes/data.json");
+            // Usar this.app en SubjectEditorModal y this.plugin.app en CornellDashboardView
+            const appInstance = (this as any).plugin ? (this as any).plugin.app : (this as any).app;
+            const configStr = await appInstance.vault.adapter.read(".obsidian/plugins/tasknotes/data.json");
             const config = JSON.parse(configStr);
-            return config.apiPort || 8080; // Retornamos el puerto o el 8080 por defecto
+            return {
+                port: config.apiPort || 8080,
+                token: config.apiAuthToken || "" // Rescatamos el token si existe
+            };
         } catch (e) {
-            return 8080; // Si el archivo no existe o hay error, asumimos el default
+            return { port: 8080, token: "" };
         }
     }
     //  HASTA AQUÍ 
@@ -1801,24 +1811,25 @@ export class SubjectEditorModal extends Modal {
         if (!subject.syllabus || subject.syllabus.length === 0) return;
 
         let createdCount = 0;
-        const port = await this.getTaskNotesPort();
+        const config = await this.getTaskNotesConfig(); // 👈 Leemos la nueva config
 
-        // 🌟 MEJORA 1: Crear la nota del Proyecto (Subject) si no existe en Obsidian
-        // Quitamos caracteres raros del nombre para evitar problemas con el archivo
+        // Preparamos los headers de seguridad
+        const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (config.token) {
+            reqHeaders['Authorization'] = `Bearer ${config.token}`; // 👈 Inyectamos el Token
+        }
+
         const safeSubjectName = subject.name.replace(/[\\/:*?"<>|]/g, ''); 
         const projectFileName = `${safeSubjectName}.md`;
         const projectFile = this.app.vault.getAbstractFileByPath(projectFileName);
         
         if (!projectFile) {
             try {
-                // Creamos una nota base para que el project link de TaskNotes sea real
                 await this.app.vault.create(
                     projectFileName, 
                     `---\ntags:\n  - project\n---\n# ${safeSubjectName}\n\nProyecto generado automáticamente por Cornell Marginalia.`
                 );
-            } catch (e) {
-                console.debug("[Cornell Marginalia] La nota del proyecto ya existe o hubo un error leve.");
-            }
+            } catch (e) { /* Silencioso */ }
         }
 
         for (const topic of subject.syllabus) {
@@ -1826,16 +1837,16 @@ export class SubjectEditorModal extends Modal {
 
             try {
                 const response = await requestUrl({
-                    url: `http://127.0.0.1:${port}/api/tasks`,
+                    url: `http://127.0.0.1:${config.port}/api/tasks`, // 👈 Usamos config.port
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: reqHeaders, // 👈 Pasamos los headers seguros
                     body: JSON.stringify({
-                        title: topic.name, // 🌟 MEJORA 2: Ahora es SOLO el nombre del topic
+                        title: topic.name,
                         details: `Syllabus rule: ${topic.rule}`,
                         due: new Date(subject.examDate).toISOString().split('T')[0],
-                        tags: ["cornell"], // 🌟 MEJORA 3: Tag #cornell (se envía sin el # por API)
-                        contexts: [`@${safeSubjectName.replace(/\s+/g, '')}`], // 🌟 MEJORA 4: Contexto con @ y sin espacios
-                        projects: [`[[${safeSubjectName}]]`] // 🌟 MEJORA 5: Vinculado a la nota que creamos arriba
+                        tags: ["cornell"],
+                        contexts: [`@${safeSubjectName.replace(/\s+/g, '')}`],
+                        projects: [`[[${safeSubjectName}]]`]
                     })
                 });
 
@@ -1850,7 +1861,7 @@ export class SubjectEditorModal extends Modal {
 
         if (createdCount > 0) {
             await this.plugin.saveSettings();
-            new Notice(`🔗 Sincronizadas ${createdCount} tareas con metadatos completos.`);
+            new Notice(`🔗 Sincronizadas ${createdCount} tareas (Secure Mode).`);
         }
     }
 

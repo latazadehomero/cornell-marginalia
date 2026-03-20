@@ -1,4 +1,4 @@
-import { Notice, App, Modal, TFile, setIcon } from "obsidian";
+import { Notice, App, Modal, TFile, setIcon, MarkdownRenderer, Component } from "obsidian";
 import CornellMarginalia from "../main";
 
 export class MargidoroAddon {
@@ -10,7 +10,7 @@ export class MargidoroAddon {
 
     private statusBarItem: HTMLElement | null = null;
     
-    // 🎛️ Sub-elementos de la UI para no redibujar todo por segundo
+    // 🎛️ Sub-elementos de la UI
     private mainToggleEl: HTMLElement | null = null;
     private addBtnEl: HTMLElement | null = null;
     private skipBtnEl: HTMLElement | null = null;
@@ -27,6 +27,9 @@ export class MargidoroAddon {
     
     public sessionObjective: string = ""; 
 
+    // 📸 NUEVO: Memoria temporal para el Snapshot del Pomodoro
+    public initialMarginalias: Set<string> = new Set();
+
     constructor(plugin: CornellMarginalia) {
         this.plugin = plugin;
     }
@@ -41,7 +44,6 @@ export class MargidoroAddon {
             this.statusBarItem.style.alignItems = "center";
             this.statusBarItem.style.gap = "6px";
 
-            // 1. Botón Principal (Play/Pause y Reloj)
             this.mainToggleEl = this.statusBarItem.createSpan();
             this.mainToggleEl.onclick = (e) => {
                 e.stopPropagation();
@@ -49,13 +51,11 @@ export class MargidoroAddon {
                 else this.startTimer();
             };
 
-            // 2. Botón +5 Minutos (Flexible)
             this.addBtnEl = this.statusBarItem.createSpan({ text: "+5m", title: "Add 5 minutes" });
             this.addBtnEl.style.fontSize = "0.85em";
             this.addBtnEl.style.color = "var(--text-muted)";
             this.addBtnEl.style.padding = "2px 4px";
             this.addBtnEl.style.borderRadius = "4px";
-            // Efecto Hover Nátivo
             this.addBtnEl.onmouseenter = () => { if(this.addBtnEl) { this.addBtnEl.style.backgroundColor = "var(--background-modifier-hover)"; this.addBtnEl.style.color = "var(--text-normal)"; } };
             this.addBtnEl.onmouseleave = () => { if(this.addBtnEl) { this.addBtnEl.style.backgroundColor = "transparent"; this.addBtnEl.style.color = "var(--text-muted)"; } };
             this.addBtnEl.onclick = (e) => {
@@ -65,7 +65,6 @@ export class MargidoroAddon {
                 new Notice("⏱️ Added 5 minutes!");
             };
 
-            // 3. Botón Skip (Saltar de Work a Break o viceversa)
             this.skipBtnEl = this.statusBarItem.createSpan({ text: "⏭", title: "Skip phase" });
             this.skipBtnEl.style.fontSize = "0.9em";
             this.skipBtnEl.style.color = "var(--text-muted)";
@@ -110,9 +109,31 @@ export class MargidoroAddon {
         }, 30000); 
     }
 
+    // 📸 NUEVO: Función de Captura Rápida de Bóveda
+    public async takeSnapshot() {
+        const snapshot = new Set<string>();
+        const files = this.plugin.app.vault.getMarkdownFiles();
+        for (const file of files) {
+            const content = await this.plugin.app.vault.cachedRead(file);
+            
+            // Bypass rápido por rendimiento: Si no hay marcas, saltar archivo
+            if (!content.includes('%%>') && !content.includes('%%<')) continue; 
+            
+            const regex = /%%[><](.*?)%%/g;
+            let match;
+            while ((match = regex.exec(content)) !== null) {
+                // Removemos el blockId final para comparar textos limpios
+                const cleanMatch = match[0].replace(/\^([a-zA-Z0-9]+)\s*$/, '').trim();
+                // Usamos la ruta + el texto como identificador único
+                snapshot.add(`${file.path}::${cleanMatch}`);
+            }
+        }
+        this.initialMarginalias = snapshot;
+    }
+
     private startTimer() {
         if (!this.isRunning) {
-            if (this.mode === 'work' && this.timeLeft === this.plugin.settings.margidoro.workTime * 60 && !this.sessionObjective) {
+            if (this.mode === 'work' && this.timeLeft === (this.plugin.settings.margidoro.workTime || 25) * 60 && !this.sessionObjective) {
                 new MargidoroObjectiveModal(this.plugin.app, this, (objective) => {
                     this.sessionObjective = objective;
                     this.executeStartTimer();
@@ -123,11 +144,27 @@ export class MargidoroAddon {
         }
     }
 
-    private executeStartTimer() {
+    private async executeStartTimer() { 
         this.isRunning = true;
-        if (this.mode === 'work' && this.timeLeft === this.plugin.settings.margidoro.workTime * 60) {
+        
+        if (this.mode === 'work' && this.timeLeft === (this.plugin.settings.margidoro.workTime || 25) * 60) {
             this.sessionStartTime = Date.now();
             new Notice(this.sessionObjective ? `🎯 Focus: ${this.sessionObjective}` : "🍅 Margidoro started! Focus on your Marginalias.");
+            
+            // 📸 Disparamos la captura de snapshot en segundo plano
+            // No usamos await aquí para no congelar la UI, se hace mientras el reloj corre.
+            this.takeSnapshot();
+
+            if (!this.plugin.settings.dashboardData.trackerHistory) {
+                this.plugin.settings.dashboardData.trackerHistory = [];
+            }
+            
+            this.plugin.settings.dashboardData.trackerHistory.push({
+                timestamp: this.sessionStartTime,
+                objective: this.sessionObjective
+            });
+            
+            await this.plugin.saveSettings();
         }
         
         this.timerInterval = window.setInterval(() => {
@@ -152,9 +189,9 @@ export class MargidoroAddon {
 
     private resetTimer() {
         this.pauseTimer();
-        if (this.mode === 'work') this.timeLeft = this.plugin.settings.margidoro.workTime * 60;
-        else if (this.mode === 'shortBreak') this.timeLeft = this.plugin.settings.margidoro.shortBreak * 60;
-        else this.timeLeft = this.plugin.settings.margidoro.longBreak * 60;
+        if (this.mode === 'work') this.timeLeft = (this.plugin.settings.margidoro.workTime || 25) * 60;
+        else if (this.mode === 'shortBreak') this.timeLeft = (this.plugin.settings.margidoro.shortBreak || 5) * 60;
+        else this.timeLeft = (this.plugin.settings.margidoro.longBreak || 15) * 60;
         this.updateDisplay();
     }
 
@@ -166,8 +203,10 @@ export class MargidoroAddon {
         const timeStr = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
         
         let icon = this.mode === 'work' ? '🍅' : (this.mode === 'longBreak' ? '🛌' : '☕');
-        let state = this.isRunning ? '⏸' : '▶'; // El botón muestra la acción que VA a hacer al darle clic
-        let cycle = this.mode === 'work' ? ` [${(this.completedSessions % 4) + 1}/4]` : '';
+        let state = this.isRunning ? '⏸' : '▶'; 
+        
+        const targetCycles = this.plugin.settings.margidoro.cyclesBeforeLongBreak || 4;
+        let cycle = this.mode === 'work' ? ` [${(this.completedSessions % targetCycles) + 1}/${targetCycles}]` : '';
         
         this.mainToggleEl.innerText = `${icon}${cycle} ${timeStr} ${state}`;
         this.mainToggleEl.style.fontWeight = this.isRunning ? "bold" : "normal";
@@ -176,12 +215,28 @@ export class MargidoroAddon {
 
     private handleSessionEnd() {
         this.pauseTimer();
+
+        if (this.mode === 'work') {
+            const actualDurationMs = Date.now() - this.sessionStartTime;
+            const actualDurationMins = Math.floor(actualDurationMs / 60000); 
+            
+            const history = this.plugin.settings.dashboardData?.trackerHistory;
+            if (history && history.length > 0) {
+                const currentSession = history.find((s: any) => s.timestamp === this.sessionStartTime);
+                if (currentSession) {
+                    currentSession.durationMinutes = actualDurationMins;
+                    this.plugin.saveSettings(); 
+                }
+            }
+        }
         
+        const targetCycles = this.plugin.settings.margidoro.cyclesBeforeLongBreak || 4;
+
         if (this.mode === 'work') {
             this.completedSessions++; 
             
-            if (this.completedSessions > 0 && this.completedSessions % 4 === 0) {
-                new Notice("🎉 4 Pomodoros completed! Time for a Long Break. Preparing Review...");
+            if (this.completedSessions > 0 && this.completedSessions % targetCycles === 0) {
+                new Notice(`🎉 ${targetCycles} Pomodoros completed! Time for a Long Break. Preparing Review...`);
                 this.mode = 'longBreak';
             } else {
                 new Notice("⏰ Work session finished! Preparing Review...");
@@ -264,13 +319,13 @@ interface SessionNote {
 }
 
 export class MargidoroReviewModal extends Modal {
-    plugin: any;
+    plugin: CornellMarginalia; 
     sessionStartTime: number;
     sessionObjective: string;
     addon: MargidoroAddon;
     notesCreated: SessionNote[] = [];
 
-    constructor(app: App, plugin: any, sessionStartTime: number, sessionObjective: string, addon: MargidoroAddon) {
+    constructor(app: App, plugin: CornellMarginalia, sessionStartTime: number, sessionObjective: string, addon: MargidoroAddon) {
         super(app);
         this.plugin = plugin;
         this.sessionStartTime = sessionStartTime;
@@ -291,37 +346,50 @@ export class MargidoroReviewModal extends Modal {
         }
 
         contentEl.createEl("p", { 
-            text: "Here are the marginalias you created during this focus block. How well do you understand them?",
+            text: "Here are the marginalias you created or edited during this focus block.",
             cls: "text-muted"
         });
 
         await this.scanSessionNotes();
 
         if (this.notesCreated.length === 0) {
-            contentEl.createEl("h3", { text: "You didn't create any marginalias this session.", attr: { style: "text-align: center; color: var(--text-muted); margin-top: 20px;" } });
+            contentEl.createEl("h3", { text: "No new or edited marginalias found for this session.", attr: { style: "text-align: center; color: var(--text-muted); margin-top: 20px;" } });
             
             const btnRow = contentEl.createDiv({ attr: { style: "display: flex; justify-content: center; margin-top: 20px;" } });
             const closeBtn = btnRow.createEl("button", { text: "Close & Start Break" });
             closeBtn.onclick = () => {
-                this.addon.sessionObjective = ""; // Limpiamos para el próximo
+                this.addon.sessionObjective = ""; 
                 this.close();
             };
             return;
         }
 
-        const listContainer = contentEl.createDiv({ attr: { style: "max-height: 400px; overflow-y: auto; margin-top: 15px; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 10px;" } });
+        const listContainer = contentEl.createDiv({ attr: { style: "max-height: 400px; overflow-y: auto; overflow-x: hidden; margin-top: 15px; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 10px;" } });
 
         this.notesCreated.forEach((note) => {
-            const itemRow = listContainer.createDiv({ attr: { style: "display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid var(--background-modifier-border);" } });
+            const itemRow = listContainer.createDiv({ attr: { style: "display: flex; justify-content: space-between; align-items: flex-start; padding: 10px; border-bottom: 1px solid var(--background-modifier-border);" } });
             
-            const textCol = itemRow.createDiv({ attr: { style: "flex-grow: 1; margin-right: 15px;" } });
+            const textCol = itemRow.createDiv({ attr: { style: "flex-grow: 1; margin-right: 15px; overflow: hidden;" } });
             textCol.createDiv({ text: note.file.basename, attr: { style: "font-size: 0.8em; color: var(--text-muted); margin-bottom: 4px;" } });
             
             let cleanText = note.text.replace(/%%[><](.*?)%%/g, '$1').trim();
-            if (cleanText.length > 100) cleanText = cleanText.substring(0, 100) + "...";
-            textCol.createDiv({ text: cleanText, attr: { style: "font-weight: 500;" } });
+            cleanText = cleanText.replace(/img:\s*\[\[(.*?)\]\]/gi, '![[$1]]').trim();
 
-            const evalCol = itemRow.createDiv({ attr: { style: "display: flex; gap: 8px; flex-shrink: 0;" } });
+            const imgRegex = /!\[\[(.*?(?:\.png|\.jpg|\.jpeg|\.gif|\.bmp|\.svg))\|?(.*?)\]\]/gi;
+            cleanText = cleanText.replace(imgRegex, (match, filename) => {
+                const trimmedFilename = filename.trim();
+                const file = this.plugin.app.metadataCache.getFirstLinkpathDest(trimmedFilename, note.file.path);
+                if (file) {
+                    const resourcePath = this.plugin.app.vault.getResourcePath(file);
+                    return `<img src="${resourcePath}" style="max-height: 130px; width: auto; object-fit: contain; border-radius: 6px; display: block; margin: 8px 0;" />`;
+                }
+                return match; 
+            });
+            
+            const contentDiv = textCol.createDiv({ attr: { style: "font-weight: 500; max-height: 150px; overflow-y: auto;" } });
+            MarkdownRenderer.renderMarkdown(cleanText, contentDiv, note.file.path, this.plugin);
+
+            const evalCol = itemRow.createDiv({ attr: { style: "display: flex; gap: 8px; flex-shrink: 0; padding-top: 20px;" } });
             
             const easyBtn = evalCol.createEl("button", { text: "✅ Easy" });
             const reviewBtn = evalCol.createEl("button", { text: "🤔 Review" });
@@ -351,7 +419,7 @@ export class MargidoroReviewModal extends Modal {
         
         saveBtn.onclick = async () => {
             await this.saveSessionLog();
-            this.addon.sessionObjective = ""; // 👈 Limpiamos el objetivo para el próximo pomodoro
+            this.addon.sessionObjective = ""; 
             this.close();
             new Notice("🍅 Session Log saved! Enjoy your break.");
         };
@@ -362,6 +430,7 @@ export class MargidoroReviewModal extends Modal {
         const hardPrefix = this.plugin.settings.margidoro?.hardPrefix || "?";
         
         for (const file of files) {
+            // Evaluamos solo los archivos que Obsidian detecta como modificados en este tiempo
             if (file.stat.mtime >= this.sessionStartTime || file.stat.ctime >= this.sessionStartTime) {
                 const content = await this.plugin.app.vault.cachedRead(file);
                 const lines = content.split('\n');
@@ -373,6 +442,16 @@ export class MargidoroReviewModal extends Modal {
 
                     while ((match = regex.exec(line)) !== null) {
                         const fullMatch = match[0];
+                        
+                        // 🛡️ EL ESCUDO: Comparamos contra la foto inicial del Pomodoro
+                        const cleanMatchForSnapshot = fullMatch.replace(/\^([a-zA-Z0-9]+)\s*$/, '').trim();
+                        const snapshotKey = `${file.path}::${cleanMatchForSnapshot}`;
+                        
+                        // Si la marginalia estaba EXACTAMENTE IGUAL antes de iniciar, la descartamos
+                        if (this.addon.initialMarginalias.has(snapshotKey)) {
+                            continue;
+                        }
+
                         const noteContent = match[1].trim();
                         if (!noteContent) continue;
 
@@ -424,7 +503,6 @@ export class MargidoroReviewModal extends Modal {
 
         const pending = [...reviewNotes, ...hardNotes];
 
-        // Inyección de IDs silenciosa solo para notas difíciles
         for (const note of pending) {
             if (!note.text.match(/\^([a-zA-Z0-9]+)\s*$/)) {
                 const newId = Math.random().toString(36).substring(2, 8);

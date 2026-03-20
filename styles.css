@@ -1432,6 +1432,15 @@ input.cornell-search-bar:focus {
     transform: scale(1.05);
     filter: brightness(1.2);
 }
+.srs-suspend { 
+    background-color: var(--background-modifier-error); 
+    color: white; 
+    opacity: 0.6; 
+}
+.srs-suspend:hover { 
+    opacity: 1; 
+    filter: brightness(1.2); 
+}
 
 /* ======================================================
    🔍 BARRA SUPERIOR DE FILTROS (MÁQUINA DEL TIEMPO)
@@ -1732,4 +1741,598 @@ body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target
 
 body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target .is-explanatory:hover img {
     filter: blur(0px) opacity(1) !important;
+}
+/* ======================================================
+   🚀 CORNELL ULTIMATE DASHBOARD (V2 - Layout)
+   ====================================================== */
+
+/* Contenedor principal: apila verticalmente (Timeline arriba, Columnas abajo) */
+.cornell-ultimate-dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 20px;
+    height: 100%;
+    overflow-y: auto;
+}
+
+/* ⏳ Contenedor del Timeline (Ocupa todo el ancho arriba) */
+.dashboard-timeline-container {
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 12px;
+    padding: 15px;
+    width: 100%; 
+    min-height: 120px; 
+}
+
+/* Preparando el terreno para el scroll horizontal infinito */
+.timeline-scroll-area {
+    display: flex;
+    overflow-x: auto;
+    padding: 10px 0;
+    /* Ocultar barra de scroll en navegadores webkit para que se vea más limpio */
+    scrollbar-width: thin; 
+}
+
+/* 🏗️ Contenedor de las 3 columnas (El Grid se mueve aquí) */
+.dashboard-columns-container {
+    display: grid;
+    grid-template-columns: 1fr 1.5fr 1fr; 
+    gap: 20px;
+    flex-grow: 1; /* Para que ocupe el resto del espacio vertical si la pantalla es grande */
+}
+
+/* Estilo básico para cada caja/columna */
+.dashboard-col {
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 12px;
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Títulos de todas las secciones */
+.dashboard-col h2, .dashboard-timeline-container h2 {
+    margin-top: 0;
+    border-bottom: 2px solid var(--text-accent);
+    padding-bottom: 10px;
+    font-size: 1.2em;
+}
+/* ======================================================
+   🍅 MARGIDORO - KOREAN TRACKER & REVIEW
+   ====================================================== */
+
+.korean-tracker {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.tracker-total {
+    margin: 0;
+    font-size: 1.1em;
+    color: var(--text-accent);
+}
+
+.korean-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 250px;
+    overflow-y: auto; /* Scroll si la lista de horas es muy larga */
+    padding-right: 5px;
+    scrollbar-width: thin;
+}
+
+.korean-grid-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.korean-hour {
+    width: 40px;
+    font-size: 0.8em;
+    color: var(--text-muted);
+    text-align: right;
+}
+
+.korean-blocks {
+    display: flex;
+    gap: 4px;
+}
+
+/* El cuadrito de 10 minutos vacío */
+.korean-block {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    background-color: var(--background-modifier-border);
+    transition: background-color 0.3s ease;
+}
+
+/* El cuadrito cuando se le de Play a Margidoro */
+.korean-block.studied {
+    background-color: var(--color-red); /* O el color acento que prefieras */
+    box-shadow: 0 0 4px var(--color-red);
+}
+
+/* Lista de repaso */
+.margidoro-review-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.review-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px;
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    font-family: monospace;
+}
+/* El texto del objetivo al lado de los cuadritos */
+.korean-objective {
+    margin-left: 12px;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    font-style: italic;
+    
+    /* Magia para que no rompa el diseño si el texto es muy largo */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-grow: 1; /* Toma todo el espacio sobrante a la derecha */
+}
+/* ======================================================
+   📅 DAILY PLANNER (LEFT COLUMN)
+   ====================================================== */
+.daily-planner-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid var(--text-accent);
+    padding-bottom: 10px;
+    margin-bottom: 15px;
+}
+
+.daily-planner-header h2 {
+    margin: 0;
+    border: none;
+    padding: 0;
+}
+
+.daily-timeline-container {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding-right: 5px;
+}
+
+.daily-block {
+    display: flex;
+    min-height: 60px;
+    margin-bottom: 5px;
+    position: relative;
+    transition: background-color 0.2s ease;
+    border-radius: 6px;
+}
+
+.daily-block:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+/* Columna de Horas */
+.daily-block-time {
+    width: 55px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 5px 0;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    text-align: right;
+    padding-right: 10px;
+}
+
+.time-start { font-weight: bold; color: var(--text-normal); }
+.time-end { opacity: 0.6; }
+
+/* El "Nodo" central de la línea de tiempo */
+.daily-block-node {
+    width: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+}
+
+/* Línea conectora (se dibuja con un degradado que lee la variable --progress) */
+.daily-block-node::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--block-color) var(--progress, 0%), var(--background-modifier-border) var(--progress, 0%));
+    z-index: 0;
+    transition: background 1s linear; /* Movimiento suave de la tinta */
+}
+
+/* El ícono base */
+.daily-block-icon {
+    margin-top: 5px;
+    background-color: var(--background-secondary);
+    border: 2px solid var(--background-modifier-border);
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+    color: var(--text-muted);
+    transition: all 0.3s ease;
+}
+
+.daily-block-icon svg { width: 12px; height: 12px; }
+
+/* ⏳ ESTADOS DEL TIEMPO (LA VIDA DEL PLANNER) */
+
+/* 1. FUTURO: Gris y apagado */
+.daily-block.is-future .daily-block-icon {
+    border-color: var(--background-modifier-border);
+    color: var(--text-muted);
+}
+.daily-block.is-future .daily-block-title { opacity: 0.7; }
+
+/* 2. PASADO: Relleno sólido, misión cumplida */
+.daily-block.is-past .daily-block-icon {
+    background-color: var(--block-color);
+    border-color: var(--block-color);
+    color: #ffffff; /* Icono blanco para contrastar */
+}
+.daily-block.is-past .daily-block-title { opacity: 0.5; text-decoration: line-through; }
+
+/* 3. PRESENTE: El latido (Pulse Glow) */
+.daily-block.is-current .daily-block-icon {
+    background-color: var(--background-primary);
+    border-color: var(--block-color);
+    color: var(--block-color);
+    animation: daily-pulse 2s infinite;
+}
+.daily-block.is-current .daily-block-title {
+    color: var(--block-color);
+    font-size: 1.05em; /* Un poquito más grande para destacar */
+}
+
+/* Animación de radar pulsante */
+@keyframes daily-pulse {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 var(--block-color); }
+    70% { transform: scale(1.1); box-shadow: 0 0 0 8px transparent; }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Colores según el tipo (Sobrios) */
+.daily-block.type-study .daily-block-icon { border-color: var(--color-blue); color: var(--color-blue); }
+.daily-block.type-class .daily-block-icon { border-color: var(--color-purple); color: var(--color-purple); }
+.daily-block.type-review .daily-block-icon { border-color: var(--color-orange); color: var(--color-orange); }
+.daily-block.type-break .daily-block-icon { border-color: var(--color-green); color: var(--color-green); }
+
+/* Contenido de la tarea */
+.daily-block-content {
+    flex-grow: 1;
+    padding: 5px 10px 5px 15px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.daily-block-title {
+    font-weight: bold;
+    color: var(--text-normal);
+    font-size: 0.95em;
+    margin-bottom: 2px;
+}
+
+.daily-block-subtitle {
+    font-size: 0.75em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+/* ======================================================
+   🗓️ WEEKLY PLANNER MODAL
+   ====================================================== */
+.weekly-planner-form {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    background-color: var(--background-secondary);
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid var(--background-modifier-border);
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.weekly-planner-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 10px;
+    margin-top: 10px;
+    min-height: 300px;
+}
+
+.weekly-day-col {
+    background-color: var(--background-secondary-alt);
+    border-radius: 6px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.weekly-day-header {
+    text-align: center;
+    font-weight: bold;
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 5px;
+    margin-bottom: 5px;
+}
+
+.weekly-empty {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85em;
+    font-style: italic;
+    opacity: 0.6;
+}
+
+.weekly-block-card {
+    background-color: var(--background-primary);
+    border-left: 4px solid var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* Colores por tipo (igual que en el Daily Planner) */
+.weekly-block-card.type-study { border-left-color: var(--color-blue); }
+.weekly-block-card.type-class { border-left-color: var(--color-purple); }
+.weekly-block-card.type-review { border-left-color: var(--color-orange); }
+.weekly-block-card.type-break { border-left-color: var(--color-green); }
+
+.weekly-block-time {
+    display: flex;
+    justify-content: space-between;
+    font-family: monospace;
+    font-size: 0.8em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.weekly-block-title {
+    font-size: 0.9em;
+    font-weight: 600;
+}
+
+.weekly-block-del {
+    cursor: pointer;
+    color: var(--text-error);
+    opacity: 0.5;
+}
+.weekly-block-del:hover { opacity: 1; }
+/* ======================================================
+   📚 SUBJECTS & RESOURCES (CENTER COLUMN)
+   ====================================================== */
+.subjects-container {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    overflow-y: auto;
+    padding-right: 5px;
+}
+.subject-card {
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 12px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.subject-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+.subject-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.subject-title {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: var(--text-normal);
+}
+.subject-actions {
+    display: flex;
+    gap: 8px;
+}
+.subject-action-icon {
+    cursor: pointer;
+    color: var(--text-muted);
+    opacity: 0.6;
+    transition: opacity 0.2s, color 0.2s;
+    display: flex;
+    align-items: center;
+}
+.subject-action-icon:hover { opacity: 1; color: var(--text-normal); }
+.subject-action-icon svg { width: 14px; height: 14px; }
+
+.subject-countdown {
+    font-size: 0.85em;
+    color: var(--color-orange);
+    font-weight: 600;
+}
+
+.subject-folders {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+.folder-chip {
+    background-color: var(--background-secondary-alt);
+    border: 1px solid var(--background-modifier-border);
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 0.75em;
+    color: var(--text-muted);
+    font-family: monospace;
+}
+
+.subject-study-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+    border-top: 1px dashed var(--background-modifier-border);
+    padding-top: 10px;
+}
+.subject-study-actions button {
+    flex-grow: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    border-radius: 6px;
+}
+/* ======================================================
+   🚀 FLOATING SRS CONTROL BAR (INMERSIVE MODE)
+   ====================================================== */
+.cornell-srs-floating-bar {
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+    border-radius: 12px;
+    padding: 15px 25px;
+    z-index: 99999;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 400px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    animation: srs-slide-up 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes srs-slide-up {
+    from { bottom: -100px; opacity: 0; transform: translateX(-50%) scale(0.9); }
+    to { bottom: 40px; opacity: 1; transform: translateX(-50%) scale(1); }
+}
+
+.srs-floating-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 8px;
+    color: var(--text-normal);
+}
+
+.srs-floating-header button {
+    background: transparent;
+    box-shadow: none;
+    padding: 4px;
+    height: 28px;
+    width: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+}
+.srs-floating-header button:hover {
+    background: var(--background-modifier-hover);
+    border-radius: 6px;
+}
+
+.srs-floating-controls {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+}
+
+.srs-btn {
+    flex-grow: 1;
+    padding: 10px;
+    font-size: 1em;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: transform 0.1s, filter 0.2s;
+    border: none;
+    font-weight: bold;
+}
+.srs-btn:active { transform: scale(0.95); }
+
+.srs-hard { background-color: var(--color-red); color: white; }
+.srs-good { background-color: var(--color-green); color: white; }
+.srs-easy { background-color: var(--color-blue); color: white; }
+.srs-btn:hover { filter: brightness(1.2); }
+/* Interacción de los Sources (Chips) */
+.folder-chip.is-clickable {
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s, transform 0.1s;
+}
+.folder-chip.is-clickable:hover {
+    background-color: var(--background-modifier-hover);
+    border-color: var(--interactive-accent);
+}
+.folder-chip.is-clickable:active {
+    transform: scale(0.95);
+}
+/* ======================================================
+   🏛️ DASHBOARD CSS GRID ENGINE (MODULAR & WIDGETS)
+   ====================================================== */
+.cornell-ultimate-dashboard {
+    display: grid;
+    /* La estructura base de las columnas. Las filas las inyecta el TS */
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    height: 100%;
+    overflow: hidden;
+    padding-bottom: 20px;
+    margin-top: 15px;
+}
+
+/* 🎯 Asignación Semántica Estricta (Esto previene el solapamiento en [1,1]) */
+.dashboard-timeline-container { grid-area: timeline; min-height: 0; display: flex; flex-direction: column; }
+.dashboard-planner  { grid-area: planner; }
+.dashboard-subjects { grid-area: subjects; }
+.dashboard-tracker  { grid-area: tracker; }
+.dashboard-dailyNote{ grid-area: dailyNote; }
+
+.dashboard-col { 
+    display: flex; 
+    flex-direction: column; 
+    min-height: 0; 
+    overflow-y: auto; 
+    padding-right: 10px; 
 }

@@ -11,6 +11,8 @@ import { SuperDoodleAddon } from "./addons/super-doodle";
 import { BlurtingAddon, BlurtingSetupModal } from "./addons/BlurtingAddon";
 import { MargidoroAddon } from "./addons/margidoro";
 import { AnkiSyncAddon } from "./addons/AnkiSyncAddon";
+import { ZoomDoodleAddon } from "./addons/ZoomDoodleAddon"; 
+import { DashboardAddon } from "./addons/DashboardAddon";
 
 // =================================================================
 // 🧠 EL CEREBRO PÚBLICO: OMNI CAPTURE MANAGER
@@ -194,6 +196,7 @@ export interface UserStats {
     customBackground: string;
     bgBlur: number;
     bgOpacity: number;
+    activeReading: Record<string, { lastReview: number; confidence: number; nextReview: number }>;
     // 👇 NUEVA MEMORIA PARA LA MÁQUINA DEL TIEMPO
     rhizomeReviews: Record<string, { 
         lastReviewed: number; // Fecha en milisegundos
@@ -202,6 +205,28 @@ export interface UserStats {
         
     }>;
     margidoroPending: string[];
+}
+
+export interface TrackerSession {
+    timestamp: number; // La hora exacta en que empezó el Pomodoro
+    objective: string; // El objetivo que escribiste
+    durationMinutes?: number;
+}
+
+export interface SyllabusTopic {
+    id: string;
+    name: string;
+    rule: string; // Ej: "#huesos" o "tema::huesos"
+}
+
+export interface ExamSubject {
+    id: string;
+    name: string;
+    examDate: number; 
+    color: string;
+    sources: string[]; 
+    syllabus: SyllabusTopic[]; // 👈 El nuevo esquema inteligente
+    activeReading: Record<string, { lastReview: number; confidence: number; nextReview: number }>; // 👈 1. AGREGA ESTA LÍNEA AQUÍ
 }
 
 interface CornellSettings {
@@ -237,6 +262,10 @@ interface CornellSettings {
     enablePdfDoodle: boolean;
     adaptiveMode: boolean;
     blurExplanatoryMarginalia: boolean;
+    enableDashboardAddon: boolean; // <- Nuevo toggle
+    dashboardData: {
+    trackerHistory: TrackerSession[]; // 👈 Aquí guardaremos el historial
+};
     margidoro: {
         workTime: number;
         shortBreak: number;
@@ -245,6 +274,7 @@ interface CornellSettings {
         hardPrefix: string; // Ej: "?" para auto-clasificar como difícil
         reviewReminderTime: string; // 👈 NUEVO
     };
+    
 }
 
 
@@ -299,13 +329,19 @@ const DEFAULT_SETTINGS: CornellSettings = {
     responsiveMarginalia: false,
     responsiveThreshold: 850,
     blurExplanatoryMarginalia: false,
+    enableDashboardAddon: false,
+    dashboardData: {
+    trackerHistory: [],
+    
+},
     // 👇 LOS VALORES POR DEFECTO PARA LOS NUEVOS USUARIOS
     addons: {
         "gamification-profile": false, // Por defecto viene apagado
         "custom-background": false,
         "rhizome-time-machine": false,
         "super-doodle": false, // 🎨
-        "anki-sync": false
+        "anki-sync": false,
+        "zoom-doodle": false
     },
     userStats: {
         xp: 0,
@@ -315,7 +351,9 @@ const DEFAULT_SETTINGS: CornellSettings = {
         profileImage: "", quote: "Stay curious.",
         customBackground: "", bgBlur: 5, bgOpacity: 0.8,
         rhizomeReviews: {},
-        margidoroPending: []
+        margidoroPending: [],
+        activeReading: {}
+        
     },
     enablePdfDoodle: false,
     // recuerda mazos
@@ -4900,6 +4938,37 @@ export class CornellSettingTab extends PluginSettingTab {
                 };
             }
         }
+        // --- ADDON: ZOOM DOODLE ---
+        new Setting(containerEl)
+            .setName(this.plugin.zoomDoodleAddon.name)
+            .setDesc(this.plugin.zoomDoodleAddon.description)
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.addons[this.plugin.zoomDoodleAddon.id] || false)
+                .onChange(async (value) => {
+                    this.plugin.settings.addons[this.plugin.zoomDoodleAddon.id] = value;
+                    await this.plugin.saveSettings();
+
+                    if (value) {
+                        this.plugin.zoomDoodleAddon.load();
+                        new Notice(`✅ ${this.plugin.zoomDoodleAddon.name} activado`);
+                    } else {
+                        this.plugin.zoomDoodleAddon.unload();
+                        new Notice(`❌ ${this.plugin.zoomDoodleAddon.name} desactivado`);
+                    }
+                })
+            );
+        new Setting(containerEl)
+    .setName('🚀 Activar Dashboard Supremo')
+    .setDesc('El jefe final: Calendario lineal, rutinas, materias y repaso espaciado dinámico.')
+    .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.enableDashboardAddon)
+        .onChange(async (value) => {
+            this.plugin.settings.enableDashboardAddon = value;
+            await this.plugin.saveSettings();
+            
+            // Le avisamos al usuario que necesita recargar para ver el icono
+            new Notice(value ? "🚀 Dashboard Activado: Por favor recarga el plugin." : "🛑 Dashboard Desactivado: Por favor recarga el plugin.");
+        }));
         }
     
 
@@ -4948,7 +5017,7 @@ export class RhizomeView extends ItemView {
         
         // 🛡️ PARCHE DE MEMORIA
         if (!this.plugin.settings.userStats) {
-            this.plugin.settings.userStats = { xp: 0, level: 1, marginaliasCreated: 0, colorUsage: {}, profileImage: "", quote: "Stay curious.", customBackground: "", bgBlur: 5, bgOpacity: 0.8, rhizomeReviews: {}, margidoroPending: [] };
+            this.plugin.settings.userStats = { xp: 0, level: 1, marginaliasCreated: 0, colorUsage: {}, profileImage: "", quote: "Stay curious.", customBackground: "", bgBlur: 5, bgOpacity: 0.8, rhizomeReviews: {}, margidoroPending: [], activeReading: {} };
         }
         if (!this.plugin.settings.userStats.rhizomeReviews) {
             this.plugin.settings.userStats.rhizomeReviews = {};
@@ -6796,6 +6865,8 @@ export default class CornellMarginalia extends Plugin {
     public blurtingAddon!: BlurtingAddon;
     public margidoroAddon!: MargidoroAddon;
     public ankiSyncAddon!: AnkiSyncAddon;
+    public zoomDoodleAddon!: ZoomDoodleAddon;
+    public activeAddons: any[] = [];
    
     // 📁 MOTOR DE CREACIÓN DE CARPETAS
     async ensureFolderExists(folderPath: string) {
@@ -6888,6 +6959,16 @@ export default class CornellMarginalia extends Plugin {
     if (this.settings.addons && this.settings.addons["anki-sync"]) {
         this.ankiSyncAddon.load();
     }
+    //zoom doodle
+    this.zoomDoodleAddon = new ZoomDoodleAddon(this);
+        if (this.settings.addons && this.settings.addons["zoom-doodle"]) {
+            this.zoomDoodleAddon.load();
+        }
+    if (this.settings.enableDashboardAddon) {
+    const dashboard = new DashboardAddon(this);
+    this.activeAddons.push(dashboard);
+    dashboard.load();
+}
         // 👆 FIN DE LA CONEXIÓN DE ADDONS
 
         this.updateStyles(); 
@@ -8023,6 +8104,10 @@ ${secondCol}
             new Notice("✅ Marginalia restored to original Markdown!");
         } else {
             new Notice("⚠️ No print blocks found to restore.");
+        // Apagamos el addon limpiamente al cerrar Obsidian
+        if (this.settings.addons && this.settings.addons["zoom-doodle"]) {
+            this.zoomDoodleAddon.unload();
         }
     }
+}
 }

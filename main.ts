@@ -273,6 +273,7 @@ interface CornellSettings {
         logFolder: string;
         hardPrefix: string; // Ej: "?" para auto-clasificar como difícil
         reviewReminderTime: string; // 👈 NUEVO
+        cyclesBeforeLongBreak: number;
     };
     
 }
@@ -367,6 +368,7 @@ const DEFAULT_SETTINGS: CornellSettings = {
         logFolder: "Margidoro Logs",
         hardPrefix: "?",
         reviewReminderTime: "20:00", // 👈 NUEVO: Hora por defecto
+        cyclesBeforeLongBreak: 4,
     },
 }
 
@@ -4837,6 +4839,21 @@ export class CornellSettingTab extends PluginSettingTab {
                 .setName('Work Duration (min)')
                 .addSlider(s => s.setLimits(5, 60, 5).setValue(this.plugin.settings.margidoro.workTime).setDynamicTooltip()
                     .onChange(async (v) => { this.plugin.settings.margidoro.workTime = v; await this.plugin.saveSettings(); }));
+        new Setting(containerEl)
+                .setName('Short Break Duration (min)')
+                .addSlider(s => s.setLimits(1, 15, 1).setValue(this.plugin.settings.margidoro.shortBreak || 5).setDynamicTooltip()
+                    .onChange(async (v) => { this.plugin.settings.margidoro.shortBreak = v; await this.plugin.saveSettings(); }));
+
+            new Setting(containerEl)
+                .setName('Long Break Duration (min)')
+                .addSlider(s => s.setLimits(10, 45, 5).setValue(this.plugin.settings.margidoro.longBreak || 15).setDynamicTooltip()
+                    .onChange(async (v) => { this.plugin.settings.margidoro.longBreak = v; await this.plugin.saveSettings(); }));
+
+            new Setting(containerEl)
+                .setName('Pomodoros before Long Break')
+                .setDesc('How many work cycles to complete before taking a longer break.')
+                .addSlider(s => s.setLimits(1, 10, 1).setValue(this.plugin.settings.margidoro.cyclesBeforeLongBreak || 4).setDynamicTooltip()
+                    .onChange(async (v) => { this.plugin.settings.margidoro.cyclesBeforeLongBreak = v; await this.plugin.saveSettings(); }));
             
             new Setting(containerEl)
                 .setName('Hard Marginalia Auto-Tag')
@@ -4958,8 +4975,8 @@ export class CornellSettingTab extends PluginSettingTab {
                 })
             );
         new Setting(containerEl)
-    .setName('🚀 Activar Dashboard Supremo')
-    .setDesc('El jefe final: Calendario lineal, rutinas, materias y repaso espaciado dinámico.')
+    .setName('🚀 Dashboard:Smart Study ')
+    .setDesc('Linear calendar, routines, subjects, and dynamic spaced review.')
     .addToggle(toggle => toggle
         .setValue(this.plugin.settings.enableDashboardAddon)
         .onChange(async (value) => {

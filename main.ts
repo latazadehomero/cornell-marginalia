@@ -1421,6 +1421,9 @@ export class CornellNotesView extends ItemView {
     activeColorFilters: Set<string> = new Set();
     cachedItems: MarginaliaItem[] = []; 
 
+    // NUEVO: Memoria para el filtro de "Ultra-Recientes" (Sesión activa)
+    isRecentFilterActive: boolean = false;
+
     // 🚀 NUEVA MEMORIA RAM (Caché de Bóveda)
     private vaultCache: Map<string, { mtime: number, items: MarginaliaItem[] }> = new Map();
 
@@ -1901,6 +1904,9 @@ export class CornellNotesView extends ItemView {
             this.applyFiltersAndRender(); 
         };
 
+        // nuevo contenedor recientes
+        const filtersRow = filterContainer.createDiv({ attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-top: 8px;' } });
+
         const pillsContainer = filterContainer.createDiv({ cls: 'cornell-color-pills' });
         this.plugin.settings.tags.forEach(tag => {
             const pill = pillsContainer.createEl('span', { cls: 'cornell-color-pill' });
@@ -1919,6 +1925,45 @@ export class CornellNotesView extends ItemView {
             };
         });
 
+        // 🕒 2. BOTÓN ULTRA-RECIENTES (Hereda exactamente las propiedades de un color-pill)
+        const recentBtn = pillsContainer.createEl('span', { cls: 'cornell-color-pill', title: "Recientes (Última hora)" });
+        
+        recentBtn.style.backgroundColor = this.isRecentFilterActive ? 'var(--interactive-accent)' : 'transparent';
+        recentBtn.style.border = '1px solid var(--background-modifier-border)';
+        recentBtn.style.color = this.isRecentFilterActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+        recentBtn.style.cursor = 'pointer';
+
+        // 🪄 EL SECRETO: Lo hacemos relativo para anclar el ícono, 
+        // pero NO le ponemos flex ni modificamos su display nativo.
+        recentBtn.style.position = 'relative';
+
+        setIcon(recentBtn, 'clock'); 
+        
+        // 🪄 CENTRADO ABSOLUTO: Sacamos el SVG del flujo normal.
+        // Así el botón se alinea idéntico a los círculos vacíos de color.
+        const svg = recentBtn.querySelector('svg');
+        if (svg) {
+            svg.style.width = '14px'; 
+            svg.style.height = '14px';
+            svg.style.strokeWidth = '2.2'; // Un poquito más gordito para que resalte
+            
+            // Centrado mágico con CSS matemático
+            svg.style.position = 'absolute';
+            svg.style.top = '50%';
+            svg.style.left = '50%';
+            svg.style.transform = 'translate(-50%, -50%)';
+        }
+
+        recentBtn.onclick = async () => {
+            this.isRecentFilterActive = !this.isRecentFilterActive;
+            
+            // Actualizamos la UI del botón al instante
+            recentBtn.style.backgroundColor = this.isRecentFilterActive ? 'var(--interactive-accent)' : 'transparent';
+            recentBtn.style.color = this.isRecentFilterActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+            
+            await this.scanNotes(); 
+        };
+// hasta acaaaaaaa
         container.createDiv({ cls: 'cornell-stitch-banner', text: '' }).style.display = 'none';
         container.createDiv({ cls: 'cornell-sidebar-content' });
 
@@ -2192,12 +2237,19 @@ export class CornellNotesView extends ItemView {
     }
     // 🧠 HELPER: Captura el estado actual de la vista respetando los filtros
     getCurrentFilteredDeck(): MarginaliaItem[] {
-        const isFilterActive = this.searchQuery.length > 0 || this.activeColorFilters.size > 0;
+        const isFilterActive = this.searchQuery.length > 0 || this.activeColorFilters.size > 0 || this.isRecentFilterActive;
         
         const matchesFilter = (item: MarginaliaItem) => {
             const matchesSearch = item.text.toLowerCase().includes(this.searchQuery) || item.file.basename.toLowerCase().includes(this.searchQuery);
-            const matchesColor = this.activeColorFilters.size === 0 || this.activeColorFilters.has(item.color);
-            return matchesSearch && matchesColor;
+            
+            // ⚡ Si estamos en Recientes, ignoramos qué colores estén cliqueados
+            const matchesColor = this.isRecentFilterActive || this.activeColorFilters.size === 0 || this.activeColorFilters.has(item.color);
+            
+            // ⚡ LÓGICA ULTRA-RECIENTE
+            const FRESHNESS_WINDOW_MS = 3600000; 
+            const matchesRecent = !this.isRecentFilterActive || (item.file && (Date.now() - item.file.stat.mtime < FRESHNESS_WINDOW_MS));
+
+            return matchesSearch && matchesColor && matchesRecent;
         };
 
         return this.cachedItems.filter(matchesFilter);
@@ -2223,6 +2275,7 @@ export class CornellNotesView extends ItemView {
         this.activePdfName = "";
         let activePdfBasename = "";
 
+        // 1. OBTENER ARCHIVOS SEGÚN EL CONTEXTO (Current o Vault)
         if (this.currentTab === 'current') {
             const activeFile = this.plugin.app.workspace.getActiveFile();
             if (activeFile) {
@@ -2236,6 +2289,7 @@ export class CornellNotesView extends ItemView {
                     const ignoredPaths = this.plugin.settings.ignoredFolders.split(',').map(s => s.trim()).filter(s => s.length > 0);
                     filesToScan = filesToScan.filter(f => !ignoredPaths.some(p => f.path.startsWith(p)));
                 } else {
+                    // Si es una nota MD normal, SOLO escaneamos esta nota
                     filesToScan.push(activeFile);
                 }
             } else {
@@ -2243,88 +2297,116 @@ export class CornellNotesView extends ItemView {
                 return;
             }
         } else {
+            // Pestaña Vault: Escaneamos todo
             filesToScan = this.plugin.app.vault.getMarkdownFiles();
             const ignoredPaths = this.plugin.settings.ignoredFolders.split(',').map(s => s.trim()).filter(s => s.length > 0);
             filesToScan = filesToScan.filter(f => !ignoredPaths.some(p => f.path.startsWith(p)));
         }
 
+        // 🚀 2. INTERCEPTOR MODO RECIENTE: Ordenar y limitar SOLO la lista que ya respeta el contexto
+        if (this.isRecentFilterActive) {
+            // Ordenamos los archivos válidos por fecha (los más nuevos primero)
+            filesToScan = filesToScan.sort((a, b) => b.stat.mtime - a.stat.mtime);
+            
+            // Si NO es un PDF (Zotlike), podemos cortar la lista a 5 archivos de forma segura para ahorrar memoria
+            if (!this.isZotlikeMode) {
+                filesToScan = filesToScan.slice(0, 5);
+            }
+        }
+
         const baseEncoded = activePdfBasename.replace(/ /g, '%20');
         const nameEncoded = this.activePdfName.replace(/ /g, '%20');
+        
+        let zotlikeFilesProcessed = 0;
 
         for (const file of filesToScan) {
-            // 🎯 EL FILTRO ZOTLIKE DEFINITIVO: Evaluamos TODA la nota
+            // 🎯 EL FILTRO ZOTLIKE DEFINITIVO
             if (this.isZotlikeMode) {
                 const fullContent = await this.plugin.app.vault.cachedRead(file);
-                // Si la nota entera NO menciona el PDF, la ignoramos sin procesarla
                 if (!fullContent.includes(this.activePdfName) && 
                     !fullContent.includes(nameEncoded) && 
                     !fullContent.includes(`[[${activePdfBasename}`) && 
                     !fullContent.includes(`[[${baseEncoded}`)) {
                     continue; 
                 }
+
+                // En modo Zotlike Reciente, si ya encontramos 5 archivos vinculados al PDF válidos, detenemos el escaneo
+                if (this.isRecentFilterActive) {
+                    zotlikeFilesProcessed++;
+                    if (zotlikeFilesProcessed > 5) break;
+                }
             }
+
+            let itemsToPush: MarginaliaItem[] = [];
 
             // 🚀 1. CONSULTAR CACHÉ (Acelerador)
             const cachedData = this.vaultCache.get(file.path);
             if (cachedData && cachedData.mtime === file.stat.mtime) {
-                allItemsFlat.push(...cachedData.items);
-                continue;
-            }
+                itemsToPush = cachedData.items;
+            } else {
+                // 🐢 2. LECTURA Y EXTRACCIÓN
+                const content = await this.plugin.app.vault.cachedRead(file);
+                const lines = content.split('\n');
+                const fileItems: MarginaliaItem[] = []; 
+                
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    const lineRegex = /%%[><](.*?)%%/g;
+                    let match;
 
-            // 🐢 2. LECTURA Y EXTRACCIÓN
-            const content = await this.plugin.app.vault.cachedRead(file);
-            const lines = content.split('\n');
-            const fileItems: MarginaliaItem[] = []; 
-            
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                const lineRegex = /%%[><](.*?)%%/g;
-                let match;
+                    while ((match = lineRegex.exec(line)) !== null) {
+                        let noteContent = match[1].trim();
+                        if (noteContent.endsWith(';;')) noteContent = noteContent.slice(0, -2).trim();
 
-                while ((match = lineRegex.exec(line)) !== null) {
-                    let noteContent = match[1].trim();
-                    if (noteContent.endsWith(';;')) noteContent = noteContent.slice(0, -2).trim();
+                        const rawTextForStitching = noteContent;
+                        let cleanText = noteContent;
 
-                    const rawTextForStitching = noteContent;
-                    let cleanText = noteContent;
-
-                    let matchedColor = defaultColor;
-                    for (const tag of this.plugin.settings.tags) {
-                        if (cleanText.startsWith(tag.prefix)) {
-                            matchedColor = tag.color;
-                            cleanText = cleanText.substring(tag.prefix.length).trim();
-                            break;
+                        let matchedColor = defaultColor;
+                        for (const tag of this.plugin.settings.tags) {
+                            if (cleanText.startsWith(tag.prefix)) {
+                                matchedColor = tag.color;
+                                cleanText = cleanText.substring(tag.prefix.length).trim();
+                                break;
+                            }
                         }
+
+                        cleanText = cleanText.replace(/img:\s*\[\[(.*?)\]\]/gi, '![[$1]]').trim();
+
+                        const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
+                        const outgoingLinks: string[] = [];
+                        const linkMatches = Array.from(cleanText.matchAll(linkRegex));
+                        linkMatches.forEach(m => outgoingLinks.push(m[1]));
+                        cleanText = cleanText.replace(linkRegex, '').trim();
+
+                        if (cleanText.length === 0) continue;
+
+                        const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)\s*$/);
+                        const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
+
+                        fileItems.push({
+                            text: cleanText,
+                            rawText: rawTextForStitching,
+                            color: matchedColor,
+                            file: file,
+                            line: i,
+                            blockId: existingBlockId,
+                            outgoingLinks: outgoingLinks
+                        });
                     }
-
-                    cleanText = cleanText.replace(/img:\s*\[\[(.*?)\]\]/gi, '![[$1]]').trim();
-
-                    const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
-                    const outgoingLinks: string[] = [];
-                    const linkMatches = Array.from(cleanText.matchAll(linkRegex));
-                    linkMatches.forEach(m => outgoingLinks.push(m[1]));
-                    cleanText = cleanText.replace(linkRegex, '').trim();
-
-                    if (cleanText.length === 0) continue;
-
-                    const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)\s*$/);
-                    const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
-
-                    fileItems.push({
-                        text: cleanText,
-                        rawText: rawTextForStitching,
-                        color: matchedColor,
-                        file: file,
-                        line: i,
-                        blockId: existingBlockId,
-                        outgoingLinks: outgoingLinks
-                    });
                 }
+                
+                // 💾 3. GUARDAR EN MEMORIA (El array en su orden original, sin alterar)
+                this.vaultCache.set(file.path, { mtime: file.stat.mtime, items: fileItems });
+                itemsToPush = fileItems;
             }
-            
-            // 💾 3. GUARDAR EN MEMORIA
-            this.vaultCache.set(file.path, { mtime: file.stat.mtime, items: fileItems });
-            allItemsFlat.push(...fileItems);
+
+            // 🚀 ORDENAMIENTO INTELIGENTE PARA NOTAS FRESCAS
+            // Invertimos SOLO la copia que va a la UI. El caché queda a salvo.
+            if (this.isRecentFilterActive) {
+                allItemsFlat.push(...[...itemsToPush].reverse()); 
+            } else {
+                allItemsFlat.push(...itemsToPush);
+            }
         }
         
         // 🌉 EL PUENTE 
@@ -2383,7 +2465,15 @@ export class CornellNotesView extends ItemView {
         } else {
             const filtered = this.cachedItems.filter(matchesFilter);
             
-            if (this.isGroupedByContent) {
+            // ⚡ 1. MODO RECIENTES: Ignora la agrupación por color y junta todo en un solo Feed
+            if (this.isRecentFilterActive) {
+                const recentResults: Record<string, MarginaliaItem[]> = {
+                    'transparent': filtered // Usamos 'transparent' para que no le pinte el borde al grupo
+                };
+                this.renderResults(recentResults, contentDiv);
+            } 
+            // 2. MODO AGRUPADO POR CONTENIDO
+            else if (this.isGroupedByContent) {
                 const groupedResults: Record<string, MarginaliaItem[]> = {};
                 filtered.forEach(item => {
                     const normalizedText = item.text.trim().toLowerCase();

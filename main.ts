@@ -7608,21 +7608,24 @@ this.registerEvent(
 
             // 👇 NUEVA CIRUGÍA DOM: Subimos por el árbol liberando restricciones dinámicamente
             setTimeout(() => {
-            let parent = el.parentElement;
-    
-            // Subimos hasta llegar al límite seguro (el área de contenido principal)
-        while (parent && !parent.classList.contains('cm-content')) {
-        parent.style.setProperty('overflow', 'visible', 'important');
-        parent.style.setProperty('contain', 'none', 'important');
+                // 🛡️ ESCUDO: Si estamos en Modo Lectura puro (no existe la vista fuente de CodeMirror), abortamos la cirugía para no romper el scroll de Obsidian
+                if (!el.closest('.markdown-source-view')) return;
+
+                let parent = el.parentElement;
         
-        // Si el padre es la línea de CodeMirror o el contenedor embed, le damos jerarquía Z
-        if (parent.classList.contains('cm-line') || parent.classList.contains('cm-embed-block')) {
-            parent.style.setProperty('z-index', '99', 'important');
-            parent.style.setProperty('position', 'relative', 'important');
-        }
-        parent = parent.parentElement;
-    }
-    }, 50); // Un pequeño timeout asegura que Obsidian ya montó todas sus capas nativas
+                // Subimos hasta llegar al límite seguro (el área de contenido principal)
+                while (parent && !parent.classList.contains('cm-content')) {
+                    parent.style.setProperty('overflow', 'visible', 'important');
+                    parent.style.setProperty('contain', 'none', 'important');
+                    
+                    // Si el padre es la línea de CodeMirror o el contenedor embed, le damos jerarquía Z
+                    if (parent.classList.contains('cm-line') || parent.classList.contains('cm-embed-block')) {
+                        parent.style.setProperty('z-index', '99', 'important');
+                        parent.style.setProperty('position', 'relative', 'important');
+                    }
+                    parent = parent.parentElement;
+                }
+            }, 50); // Un pequeño timeout asegura que Obsidian ya montó todas sus capas nativas
 
 
             // 4. Renderizar el texto principal de forma nativa
@@ -7632,12 +7635,21 @@ this.registerEvent(
             // 5. Procesar e inyectar la marginalia lateral
             if (match) {
                 const direction = match[1];
-                let noteContent = match[2].trim();
-                const isFlashcard = noteContent.endsWith(";;");
-                if (isFlashcard) noteContent = noteContent.slice(0, -2).trim();
+                let noteContent = match[2];
+                
+                // 👇 Limpieza universal y detección de flashcard
+                let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+                const isFlashcard = tempNoteContent.includes(";;");
+
+                if (isFlashcard) {
+                    tempNoteContent = tempNoteContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
+                    // Al agregar esta clase, nuestro CSS hará la magia del Blur
+                    wrapper.classList.add('cornell-flashcard-target');
+                }
 
                 let matchedColor = null;
-                let finalNoteText = noteContent;
+                let finalNoteText = tempNoteContent;
+
                 for (const tag of this.settings.tags) {
                     if (finalNoteText.startsWith(tag.prefix)) {
                         matchedColor = tag.color;

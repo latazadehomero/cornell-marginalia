@@ -8155,7 +8155,8 @@ if (isFlashcard) {
                 const direction = noteMatch[1];
                 let noteContent = noteMatch[2];
                 
-                let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+                // 👇 Limpieza universal de cualquier ID (^id o ^anki-id) y detección de flashcard
+                let tempNoteContent = noteContent.replace(/\s*[\^~][a-zA-Z0-9-]+\s*/g, ' ').trim();
                 const isFlashcard = tempNoteContent.includes(";;");
 
                 if (isFlashcard) {
@@ -8202,7 +8203,7 @@ if (isFlashcard) {
                 noteRegex.lastIndex = 0;
             }
 
-            // 🧹 PURIFICADOR: Borramos visualmente los Block IDs de Obsidian (^12345)
+            // 🧹 PURIFICADOR: Borramos visualmente los Block IDs de Obsidian (^12345) del texto base
             cleanText = cleanText.replace(/[ \t]*\^[a-zA-Z0-9-]{4,}\s*$/gm, '');
 
             // 📐 ARQUITECTURA DE COLUMNAS ESTIRADAS (Stretch)
@@ -8267,9 +8268,17 @@ ${secondCol}
                 // 🛡️ Caja fuerte
                 const safeOriginal = btoa(encodeURIComponent(fullMatch));
 
-                if (noteText.endsWith(';;')) noteText = noteText.slice(0, -2).trim();
+                // 👇 Limpieza universal de cualquier ID (^id o ^anki-id) y detección de flashcard
+                let tempNoteContent = noteText.replace(/\s*[\^~][a-zA-Z0-9-]+\s*/g, ' ').trim();
+                const isFlashcard = tempNoteContent.includes(";;");
+
+                if (isFlashcard) {
+                    tempNoteContent = tempNoteContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
+                }
 
                 let matchedColor = 'var(--text-accent)';
+                noteText = tempNoteContent;
+
                 for (const tag of this.settings.tags) {
                     if (noteText.startsWith(tag.prefix)) {
                         matchedColor = tag.color;

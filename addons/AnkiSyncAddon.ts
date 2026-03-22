@@ -229,15 +229,24 @@ export class AnkiSyncAddon extends CornellAddon {
         const cache = this.plugin.app.metadataCache.getFileCache(file);
         const noteTags = cache ? (getAllTags(cache)?.map(t => t.replace('#', '')) || []) : [];
 
-        const flashcardRegex = /%%>\s*([\s\S]*?)\s*;;\s*(?:[\^~]anki-(\d+))?\s*%%/g;
+        // 👇 NUEVO REGEX: 
+        // match[1] = Dirección (> o <)
+        // match[2] = Pregunta
+        // match[3] = Basura sobrante (Enlaces, IDs)
+        const flashcardRegex = /%%([><])\s*([\s\S]*?)\s*;;\s*([\s\S]*?)%%/g;
         let match;
         let added = 0, updated = 0;
         const replacements: { start: number, end: number, text: string }[] = [];
 
         while ((match = flashcardRegex.exec(content)) !== null) {
             const fullMatch = match[0];
-            const questionRaw = match[1].trim(); 
-            const existingAnkiId = match[2];
+            const direction = match[1];
+            const questionRaw = match[2].trim(); 
+            const trailingData = match[3] || ""; 
+
+            // Buscamos el ID de Anki dentro de la basura sobrante
+            const ankiIdMatch = trailingData.match(/[\^~]anki-(\d+)/);
+            const existingAnkiId = ankiIdMatch ? ankiIdMatch[1] : null;
 
             let blockStart = content.lastIndexOf('\n\n', match.index);
             blockStart = blockStart === -1 ? 0 : blockStart + 2;
@@ -247,14 +256,12 @@ export class AnkiSyncAddon extends CornellAddon {
 
             const fullBlock = content.substring(blockStart, blockEnd);
 
-            // 3. La RESPUESTA es todo el bloque, restándole la pregunta y la basura
+            // La RESPUESTA es todo el bloque, restándole la pregunta y la basura
             let answerRaw = fullBlock.replace(fullMatch, ''); 
             
             // 🛡️ PURIFICADOR DE FRONTMATTER (Propiedades de Obsidian)
-            // Aniquila el bloque --- ... --- si se pegó al principio de la respuesta
             answerRaw = answerRaw.replace(/^---[\s\S]*?---\s*/, '');
-            
-            // 🧹 Limpiamos los Block IDs residuales (^ryd8aj)
+            // 🧹 Limpiamos los Block IDs residuales
             answerRaw = answerRaw.replace(/\s*[\^~“][a-zA-Z0-9-]{5,}\s*/g, ' '); 
             answerRaw = answerRaw.trim();
 
@@ -274,7 +281,7 @@ export class AnkiSyncAddon extends CornellAddon {
             if (existingAnkiId) {
                 try {
                     await this.invokeAnki('updateNoteFields', { 
-                        note: { id: parseInt(existingAnkiId), fields: noteParams.fields } 
+                        note: { id: parseInt(existingAnkiId, 10), fields: noteParams.fields } 
                     });
                     updated++;
                 } catch (e: any) {
@@ -293,7 +300,8 @@ export class AnkiSyncAddon extends CornellAddon {
                         if (foundIds && foundIds.length > 0) {
                             finalAnkiId = foundIds[0].toString();
                             await this.invokeAnki('updateNoteFields', { 
-                                note: { id: parseInt(finalAnkiId), fields: noteParams.fields } 
+                                // 👇 FIX: Le decimos explícitamente a TypeScript que aquí finalAnkiId ES un string
+                                note: { id: parseInt(finalAnkiId as string, 10), fields: noteParams.fields } 
                             });
                             updated++;
                         }
@@ -304,7 +312,15 @@ export class AnkiSyncAddon extends CornellAddon {
             }
 
             if (finalAnkiId) {
-                const updatedMatch = `%%> ${questionRaw} ;; ^anki-${finalAnkiId} %%`;
+                // Reconstruimos la cola de la nota, conservando los enlaces del Rizoma
+                let newTrailingData = trailingData;
+                if (existingAnkiId) {
+                    newTrailingData = newTrailingData.replace(/[\^~]anki-\d+/, `^anki-${finalAnkiId}`);
+                } else {
+                    newTrailingData = `^anki-${finalAnkiId} ` + newTrailingData;
+                }
+                
+                const updatedMatch = `%%${direction} ${questionRaw} ;; ${newTrailingData.trim()} %%`;
                 if (updatedMatch !== fullMatch) {
                     replacements.push({
                         start: match.index,

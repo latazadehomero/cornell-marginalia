@@ -1454,6 +1454,35 @@ cramBtn.onclick = (event: MouseEvent) => {
                                 while (endLine < fileLines.length - 1 && fileLines[endLine + 1].trim() !== '' && !fileLines[endLine + 1].startsWith('```')) endLine++;
 
                                 removeTooltip(); 
+
+                                // 🎯 ESCÁNER PDF++ BLINDADO (Inyectado desde el Explorer)
+                                const pdfRegex = /!*\[\[(.*?\.(?:pdf).*?)\]\]/i;
+                                const mdPdfRegex = /\[.*?\]\((.*?\.(?:pdf).*?)\)/i;
+                                let pdfLinkText = null;
+
+                                let match = fileLines[foundItem.line].match(pdfRegex) || fileLines[foundItem.line].match(mdPdfRegex);
+                                if (match) pdfLinkText = match[1];
+                                if (!pdfLinkText && foundItem.line - 1 >= startLine) {
+                                    match = fileLines[foundItem.line - 1].match(pdfRegex) || fileLines[foundItem.line - 1].match(mdPdfRegex);
+                                    if (match) pdfLinkText = match[1];
+                                }
+                                if (!pdfLinkText && foundItem.line + 1 <= endLine) {
+                                    match = fileLines[foundItem.line + 1].match(pdfRegex) || fileLines[foundItem.line + 1].match(mdPdfRegex);
+                                    if (match) pdfLinkText = match[1];
+                                }
+
+                                if (pdfLinkText) {
+                                    const cleanLinkText = pdfLinkText.split('|')[0].trim(); // 🛡️ CRÍTICO: Quitar alias
+                                    this.plugin.app.workspace.trigger("hover-link", {
+                                        event: e, source: "preview", hoverParent: itemDiv,
+                                        targetEl: itemDiv, linktext: cleanLinkText, sourcePath: foundItem.file.path
+                                    });
+                                    return; // Salimos temprano para no dibujar el tooltip normal
+                                }
+
+                                // -------------------------------------------------------------
+                                // SI NO ES PDF, RENDERIZAMOS EL TOOLTIP MARKDOWN NORMAL
+                                // -------------------------------------------------------------
                                 let rawBlock = ''; let highlightApplied = false;
                                 for (let i = startLine; i <= endLine; i++) {
                                     let cleanLine = fileLines[i].replace(/%%[><](.*?)%%/g, '').trim();
@@ -2136,7 +2165,8 @@ export class ReviewSessionManager {
                         const ruleLower = this.topicRule ? this.topicRule.toLowerCase() : null;
                         if (ruleLower && !rawText.includes(ruleLower)) continue;
 
-                        const blockIdMatch = lines[i].match(/\^([a-zA-Z0-9]+)\s*$/);
+                        // 🛡️ ESCÁNER UNIVERSAL DE IDs: Atrapa el ID tanto si está afuera (vieja sintaxis) como adentro de los %% (nueva sintaxis)
+                        const blockIdMatch = lines[i].match(/\^([a-zA-Z0-9]+)(?:\s*%%)?\s*$/);
                         const blockId = blockIdMatch ? blockIdMatch[1] : `${file.basename}-L${i}`;
 
                         const reviewData = this.plugin.settings.userStats.rhizomeReviews[blockId] || { lastReviewed: 0, interval: 0, ease: 2.5 };

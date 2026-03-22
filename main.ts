@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, MarkdownRenderer, Component, Editor, Notice, MarkdownView, ItemView, WorkspaceLeaf, TFile, Modal, MarkdownFileInfo, HoverPopover, setIcon } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, MarkdownRenderer, Component, Editor, Notice, MarkdownView, ItemView, WorkspaceLeaf, TFile, Modal, MarkdownFileInfo, HoverPopover, setIcon, editorLivePreviewField, } from 'obsidian';
 import { RangeSetBuilder } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { EditorView, Decoration, DecorationSet, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view';
@@ -243,6 +243,7 @@ interface CornellSettings {
     extractHighlights: boolean;
     ignoredHighlightFolders: string;
     ignoredHighlightTexts: string;
+    showSyntaxInSourceMode: boolean;
     zkMode: boolean;
     zkFolder: string;
     zkTemplatePath: string;
@@ -317,6 +318,7 @@ const DEFAULT_SETTINGS: CornellSettings = {
     extractHighlights: false,
     ignoredHighlightFolders: 'Excalidraw',
     ignoredHighlightTexts: '⚠  Switch to EXCALIDRAW VIEW in the MORE OPTIONS menu of this document. ⚠', 
+    showSyntaxInSourceMode: false,
     zkMode: false,
     zkFolder: 'Zettelkasten',
     zkTemplatePath: '',
@@ -475,6 +477,19 @@ const createCornellExtension = (app: App, settings: CornellSettings, getActiveRe
 
     buildDecorations(view: EditorView) {
         const builder = new RangeSetBuilder<Decoration>();
+
+        //  ESCUDO INTELIGENTE PARA MODO FUENTE!! 
+        if (settings.showSyntaxInSourceMode) {
+            // editorLivePreviewField evalúa a 'true' en Live Preview y a 'false' en Source Mode.
+            const isLivePreview = view.state.field(editorLivePreviewField, false);
+            if (!isLivePreview) {
+                // Si estamos en Source Mode, devolvemos el constructor vacío.
+                // Esto aborta la decoración y permite que el usuario vea la sintaxis "%%" cruda.
+                return builder.finish(); 
+            }
+        }
+        //  =================================== 
+
         const file = app.workspace.getActiveFile();
         
         if (file) {
@@ -538,22 +553,21 @@ if (isCode && !isCornellBlock) continue;
                 if (isCursorInside) continue;
 
                 // 👇 1. IDENTIFICAR SI ES FLASHCARD
-                const isFlashcard = noteContent.trim().endsWith(";;");
+                let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+                const isFlashcard = tempNoteContent.includes(";;");
 
                 if (isFlashcard) {
                     decorationsData.push({
                         from: line.from, to: line.from, type: 0,
                         dec: Decoration.line({ class: "cornell-flashcard-target" })
                     });
+                    // Borramos el ;; visualmente, pero conservamos pregunta y enlaces
+                    tempNoteContent = tempNoteContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
                 }
 
                 let matchedColor = null;
-                let finalNoteText = noteContent.trim(); 
-                
-                // 👇 2. LIMPIAR LOS ';;' PARA QUE NO SE VEAN
-                if (isFlashcard) {
-                    finalNoteText = finalNoteText.slice(0, -2).trim(); 
-                }
+                // 👇 2. ASIGNAMOS EL TEXTO PURIFICADO (Declarado una sola vez)
+                let finalNoteText = tempNoteContent; 
                 
                 for (const tag of settings.tags) {
                     if (finalNoteText.startsWith(tag.prefix)) {
@@ -2356,10 +2370,17 @@ export class CornellNotesView extends ItemView {
 
                     while ((match = lineRegex.exec(line)) !== null) {
                         let noteContent = match[1].trim();
-                        if (noteContent.endsWith(';;')) noteContent = noteContent.slice(0, -2).trim();
 
-                        const rawTextForStitching = noteContent;
-                        let cleanText = noteContent;
+                        // 1. Limpieza universal del ID fantasma (para que la nueva sintaxis se vea limpia en el sidebar)
+                        let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+
+                        // 2. Detección simple de Flashcard
+                        if (tempNoteContent.includes(';;')) {
+                            tempNoteContent = tempNoteContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
+                        }
+
+                        const rawTextForStitching = noteContent; // Intacto para el cosido
+                        let cleanText = tempNoteContent;
 
                         let matchedColor = defaultColor;
                         for (const tag of this.plugin.settings.tags) {
@@ -2380,7 +2401,8 @@ export class CornellNotesView extends ItemView {
 
                         if (cleanText.length === 0) continue;
 
-                        const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)\s*$/);
+                        // 🛡️ ESCÁNER UNIVERSAL DE IDs: Atrapa tanto la vieja sintaxis (afuera) como la nueva (adentro)
+                        const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)(?:\s*%%)?\s*$/);
                         const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
 
                         fileItems.push({
@@ -4297,7 +4319,15 @@ async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
                     await this.plugin.app.vault.process(source.file, (data) => {
                         const lines = data.split('\n');
                         if (source.line >= 0 && source.line < lines.length) {
-                            lines[source.line] = lines[source.line].replace(source.rawText, source.rawText + linksToInject);
+                            let newRaw = source.rawText;
+                            // Si el rawText ya tiene un BlockID al final, metemos los enlaces justo antes
+                            const idMatch = newRaw.match(/(\s*\^[a-zA-Z0-9]+)\s*$/);
+                            if (idMatch) {
+                                newRaw = newRaw.substring(0, idMatch.index) + linksToInject + idMatch[1];
+                            } else {
+                                newRaw = newRaw + linksToInject;
+                            }
+                            lines[source.line] = lines[source.line].replace(source.rawText, newRaw);
                         }
                         return lines.join('\n');
                     });
@@ -4324,8 +4354,17 @@ async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
         await this.plugin.app.vault.process(file, (data) => {
             const lines = data.split('\n');
             if (lineIndex >= 0 && lineIndex < lines.length) {
-                if (!lines[lineIndex].match(/\^([a-zA-Z0-9]+)\s*$/)) {
-                    lines[lineIndex] = lines[lineIndex] + ` ^${newId}`;
+                let line = lines[lineIndex];
+                // Comprobamos si ya tiene un ID, sin importar si está dentro o fuera del %%
+                if (!line.match(/\^([a-zA-Z0-9]+)(?:\s*%%)?\s*$/)) {
+                    const lastPercentIndex = line.lastIndexOf('%%');
+                    if (lastPercentIndex !== -1 && lastPercentIndex > 0) {
+                        // Lo inyectamos justo antes de que cierre el comentario
+                        line = line.substring(0, lastPercentIndex) + ` ^${newId} ` + line.substring(lastPercentIndex);
+                    } else {
+                        line = line + ` ^${newId}`;
+                    }
+                    lines[lineIndex] = line;
                 }
             }
             return lines.join('\n');
@@ -4648,6 +4687,19 @@ export class CornellSettingTab extends PluginSettingTab {
         // ⚙️ ADVANCED & EXCLUSIONS
         // ======================================================
         containerEl.createEl('h3', { text: '⚙️ Advanced & Exclusions' });
+
+        new Setting(containerEl)
+            .setName('Show Syntax in Source Mode')
+            .setDesc('If enabled, Cornell Notes will show as raw Markdown syntax when using Source Mode, instead of rendering visual blocks.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.showSyntaxInSourceMode)
+                .onChange(async (value) => { 
+                    this.plugin.settings.showSyntaxInSourceMode = value; 
+                    await this.plugin.saveSettings(); 
+                    // Obligamos al Workspace a repintarse para que el cambio se vea al instante
+                    this.plugin.app.workspace.updateOptions(); 
+                })
+            );
         
         new Setting(containerEl)
             .setName('Ignored Folders')
@@ -5268,8 +5320,16 @@ export class RhizomeView extends ItemView {
         this.cachedTimelineData = {}; 
         this.allCachedNodes = [];
 
+        // 👇 1. Obtenemos el nombre de la carpeta de logs desde tus Settings
+        // (Si por algún motivo no existe, usamos el valor por defecto "Margidoro Logs")
+        const logFolder = this.plugin.settings.margidoro?.logFolder || "Margidoro Logs";
+
         for (const file of files) {
+            // Filtro general de carpetas ignoradas
             if (this.plugin.settings.ignoredFolders && file.path.includes(this.plugin.settings.ignoredFolders)) continue;
+
+            // 👇 2. ESCUDO MARGIDORO: Si el archivo pertenece a la carpeta de logs, lo ignoramos por completo
+            if (file.path.includes(logFolder)) continue;
 
             const content = await this.plugin.app.vault.cachedRead(file);
             const lines = content.split('\n');
@@ -5282,26 +5342,32 @@ export class RhizomeView extends ItemView {
                 while ((match = regex.exec(line)) !== null) {
                     let rawText = match[1].trim();
                     if (!rawText) continue;
+                
+                    // Limpieza segura del ID fantasma
+                    let tempText = rawText.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();    
 
                     let isFlashcard = false;
-                    if (rawText.endsWith(";;")) {
+                    if (tempText.includes(";;")) {
                         isFlashcard = true;
-                        rawText = rawText.slice(0, -2).trim();
+                        tempText = tempText.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
                     }
 
                     let color = "var(--text-normal)";
                     for (const tag of this.plugin.settings.tags) {
-                        if (rawText.startsWith(tag.prefix)) {
+                        if (tempText.startsWith(tag.prefix)) {
                             color = tag.color; break;
                         }
                     }
 
-                    const date = new Date(file.stat.ctime);
+                    // 👇 3. MOTOR DE TIEMPO ACTUALIZADO: Usamos 'mtime' (Modificación) en lugar de 'ctime'
+                    // Así, si escribes o repasas una nota vieja HOY, aparecerá en la columna de HOY.
+                    const date = new Date(file.stat.mtime);
                     const dateString = date.toISOString().split('T')[0];
 
                     if (!this.cachedTimelineData[dateString]) this.cachedTimelineData[dateString] = [];
 
-                    const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)\s*$/);
+                    // Tolerancia para encontrar el ID
+                    const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)(?:\s*%%)?\s*$/);
                     const blockId = blockIdMatch ? blockIdMatch[1] : null;
 
                     const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
@@ -5319,11 +5385,12 @@ export class RhizomeView extends ItemView {
                     }
 
                     // 🧼 Limpiamos el texto para que la etiqueta [West:: ...] desaparezca de la tarjeta visual
-                    const cleanCardText = rawText.replace(compassRegex, '').trim();
+                    const cleanCardText = tempText.replace(compassRegex, '').trim();
 
                     const nodeData = {
-                        text: cleanCardText, // 👈 Pasamos el texto limpio
+                        text: cleanCardText, 
                         color: color,
+                        rawText: rawText,
                         file: file,
                         line: i,
                         blockId: blockId,
@@ -6835,26 +6902,38 @@ export class RhizomeView extends ItemView {
         const banner = canvas.querySelector('.cornell-rhizome-stitch-banner');
         if (banner) banner.remove();
     }
-
+//======================================================
+    //  MOTOR de cocido!!!!
+    // ======================================================
     async executeStitch(source: any, target: any, direction: string = 'Classic') {
         new Notice(`Stitching semantic ${direction} thread... ⏳⛓︎`);
 
-        // 1. Aseguramos que el destino tenga un ID (matrícula)
+        // 1. Aseguramos que el destino tenga un ID (matrícula) ADENTRO de los %%
         let targetId = target.blockId;
         if (!targetId) {
             targetId = Math.random().toString(36).substring(2, 8);
             await this.plugin.app.vault.process(target.file, (data) => {
                 const lines = data.split('\n');
                 if (target.line >= 0 && target.line < lines.length) {
-                    if (!lines[target.line].match(/\^([a-zA-Z0-9]+)\s*$/)) {
-                        lines[target.line] = lines[target.line] + ` ^${targetId}`;
+                    let line = lines[target.line];
+                    // Verificamos si ya tiene un ID (adentro o afuera)
+                    if (!line.match(/\^([a-zA-Z0-9]+)(?:\s*%%)?\s*$/)) {
+                        const lastPercentIndex = line.lastIndexOf('%%');
+                        if (lastPercentIndex !== -1 && lastPercentIndex > 0) {
+                            // Lo inyectamos justo antes de que cierre el comentario
+                            line = line.substring(0, lastPercentIndex) + ` ^${targetId} ` + line.substring(lastPercentIndex);
+                        } else {
+                            // Fallback por si la línea está mal formateada
+                            line = line + ` ^${targetId}`;
+                        }
+                        lines[target.line] = line;
                     }
                 }
                 return lines.join('\n');
             });
         }
 
-        // 2. Inyectamos el enlace silenciosamente según la Brújula
+        // 2. Inyectamos el enlace silenciosamente según la Brújula en el Origen
         let linkToInject = "";
         if (direction === 'Classic') {
             linkToInject = ` [[${target.file.basename}#^${targetId}]]`;
@@ -6865,7 +6944,35 @@ export class RhizomeView extends ItemView {
         await this.plugin.app.vault.process(source.file, (data) => {
             const lines = data.split('\n');
             if (source.line >= 0 && source.line < lines.length) {
-                lines[source.line] = lines[source.line].replace(source.text, source.text + linkToInject);
+                let newRaw = source.rawText;
+                
+                // 🛠️ EL ARREGLO ESTÁ AQUÍ: Buscar el cierre del %% para meter el enlace ADENTRO
+                const lastPercentIndex = newRaw.lastIndexOf('%%');
+                
+                if (lastPercentIndex !== -1 && lastPercentIndex > 0) {
+                    const contentInside = newRaw.substring(0, lastPercentIndex);
+                    // Comprobamos si YA hay un ^blockId justo antes del %% final
+                    const idMatch = contentInside.match(/(\s*\^[a-zA-Z0-9]+)\s*$/);
+                    
+                    if (idMatch) {
+                        // Inyectamos justo antes del ^blockId para no romperlo
+                        newRaw = contentInside.substring(0, idMatch.index) + linkToInject + idMatch[1] + " " + newRaw.substring(lastPercentIndex);
+                    } else {
+                        // Inyectamos justo antes del %% final
+                        newRaw = contentInside + linkToInject + " " + newRaw.substring(lastPercentIndex);
+                    }
+                } else {
+                    // Fallback (si la nota no tiene %%, ej. un título o viñeta normal)
+                    const idMatch = newRaw.match(/(\s*\^[a-zA-Z0-9]+)\s*$/);
+                    if (idMatch) {
+                        newRaw = newRaw.substring(0, idMatch.index) + linkToInject + idMatch[1];
+                    } else {
+                        newRaw = newRaw + linkToInject;
+                    }
+                }
+                
+                // Efectuamos el reemplazo en la línea del documento
+                lines[source.line] = lines[source.line].replace(source.rawText, newRaw);
             }
             return lines.join('\n');
         });
@@ -7661,15 +7768,17 @@ if (isFlashcard) {
                 
                 while ((match = regex.exec(line)) !== null) {
                     const direction = match[1];
-                    let noteContent = match[2].trim();
-                    const isFlashcard = noteContent.endsWith(";;");
+                    let noteContent = match[2];
                     
+                    let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+                    const isFlashcard = tempNoteContent.includes(";;");
+
                     if (isFlashcard) {
-                        noteContent = noteContent.slice(0, -2).trim();
+                        tempNoteContent = tempNoteContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
                     }
 
                     let matchedColor = null;
-                    let finalNoteText = noteContent;
+                    let finalNoteText = tempNoteContent;
 
                     for (const tag of this.settings.tags) {
                         if (finalNoteText.startsWith(tag.prefix)) {
@@ -7849,7 +7958,8 @@ if (isFlashcard) {
         const lines = content.split('\n');
         
         const foundFlashcards: Set<string> = new Set();
-        const regex = /^(.*?)\s*%%>\s*(.*?);;\s*%%/; 
+        // 🧠 Método simple: Atrapa el texto base, y todo adentro del %% hasta tocar el primer ;;
+        const regex = /^(.*?)\s*%%[><]\s*(.*?);;/; 
 
         lines.forEach(line => {
             const match = line.match(regex);
@@ -8031,11 +8141,18 @@ if (isFlashcard) {
             while ((noteMatch = noteRegex.exec(cleanText)) !== null) {
                 const fullNote = noteMatch[0];
                 const direction = noteMatch[1];
-                let noteText = noteMatch[2].trim();
+                let noteContent = noteMatch[2];
                 
-                if (noteText.endsWith(';;')) noteText = noteText.slice(0, -2).trim();
+                let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+                const isFlashcard = tempNoteContent.includes(";;");
+
+                if (isFlashcard) {
+                    tempNoteContent = tempNoteContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
+                }
 
                 let matchedColor = 'var(--text-accent)';
+                let noteText = tempNoteContent;
+
                 for (const tag of this.settings.tags) {
                     if (noteText.startsWith(tag.prefix)) {
                         matchedColor = tag.color;

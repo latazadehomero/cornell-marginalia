@@ -2336,3 +2336,44 @@ body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target
     overflow-y: auto; 
     padding-right: 10px; 
 }
+
+/* recuadros de thread */
+.collection-box {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    margin: 8px 0;
+    padding: 2px;
+    transition: all 0.2s ease-in-out;
+}
+
+/* Requisito de UX: Brillar ligeramente al pasar el mouse */
+.collection-box:hover {
+    border-color: var(--interactive-accent);
+    box-shadow: 0 0 5px rgba(var(--interactive-accent-rgb), 0.3);
+}
+
+.collection-header {
+    cursor: pointer;
+    font-weight: bold;
+    padding: 6px;
+    background-color: var(--background-secondary);
+    border-radius: 4px;
+}
+
+.collection-body {
+    padding-left: 15px; /* Indentación visual para la jerarquía */
+    padding-top: 8px;
+}
+
+.marginalia-card {
+    background-color: var(--background-primary);
+    border-left: 3px solid var(--interactive-accent);
+    padding: 8px;
+    margin-bottom: 6px;
+    border-radius: 4px;
+    cursor: grab; /* Preparando el terreno para el Drag & Drop */
+}
+.collection-box.drag-over {
+    border-color: var(--color-green); /* O el color de éxito que uses en Obsidian */
+    background-color: rgba(var(--color-green-rgb), 0.1);
+}

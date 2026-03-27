@@ -15,6 +15,29 @@ import { ZoomDoodleAddon } from "./addons/ZoomDoodleAddon";
 import { DashboardAddon } from "./addons/DashboardAddon";
 
 // =================================================================
+// 🛡️ UTILIDADES DE SEGURIDAD (SANITIZACIÓN)
+// =================================================================
+export function sanitizeFileName(name: string): string {
+    // Previene Path Traversal (..) y elimina caracteres ilegales en Windows/Mac/Linux
+    return name.replace(/[\/\?<>\\:\*\|":]/g, '-').replace(/\.\./g, '').trim();
+}
+
+export function sanitizeForTemplater(text: string): string {
+    // Previene Ejecución de Código Remoto (RCE) a través de Templater
+    return text.replace(/<%/g, '&lt;%').replace(/%>/g, '%&gt;');
+}
+// 🛡️ UTILIDAD: Sanitizador estricto para Anki
+export function sanitizeAnkiDeckName(name: string): string {
+    if (!name) return "Default";
+    // Eliminamos etiquetas HTML y caracteres raros. Solo permitimos texto, números, espacios, '-', '_' y '::'
+    return name.replace(/<[^>]*>?/gm, '') // Elimina HTML
+               .replace(/[^\w\s\-\_:]/g, '') // Elimina caracteres especiales
+               .replace(/:{3,}/g, '::') // Evita que pongan ::: o más
+               .trim();
+}
+
+
+// =================================================================
 // 🏷️ TAG SUGGESTER: Autocompletado Nativo para Textareas
 // =================================================================
 export class TagSuggester {
@@ -204,7 +227,8 @@ export class OmniCaptureManager {
         const thought = payload.thought;
         let rawDestInput = payload.destination;
 
-        let cleanDestName = rawDestInput.replace(/^\d{12,14}\s*-\s*/, '').trim();
+        // 🛡️ SANITIZACIÓN DE RUTA APLICADA AQUÍ (Solo una vez)
+        let cleanDestName = sanitizeFileName(rawDestInput.replace(/^\d{12,14}\s*-\s*/, '').trim());
         if (!cleanDestName) cleanDestName = "Marginalia Inbox";
         let finalDestName = cleanDestName;
 
@@ -214,7 +238,7 @@ export class OmniCaptureManager {
             finalDestName = (cleanDestName !== "Marginalia Inbox") ? `${zkId} - ${cleanDestName}` : zkId;
         }
 
-        // 1. AUTO-LECTURA DEL PORTAPAPELES
+        // 1. AUTO-LECTURA DEL PORTAPAPELES (Primero obtenemos el texto)
         let context = "";
         try {
             const clipboardItems = await navigator.clipboard.read();
@@ -248,6 +272,9 @@ export class OmniCaptureManager {
             } catch (e) { }
         }
 
+        // 🛡️ SANITIZACIÓN DE TEMPLATER (Se hace DESPUÉS de haber leído el portapapeles)
+        let safeContext = sanitizeForTemplater(context);
+
         if (!thought && !context && !payload.doodleData && !pendingClipboardImageData) {
             new Notice("⚠️ Capture is empty!");
             throw new Error("Empty capture");
@@ -280,15 +307,67 @@ export class OmniCaptureManager {
             doodleSyntax = `img:[[${attachmentPath.split('/').pop()}]]`; 
         }
 
-        // 3. ENSAMBLAJE DE MARKDOWN
-        let marginaliaContent = thought ? `${thought} ` : ""; 
-        if (doodleSyntax) marginaliaContent += `${doodleSyntax}`;
+        // ====================================================================
+        // 3. 🧩 ENSAMBLAJE DE MARKDOWN (LÓGICA MULTI-MARGINALIA AÑADIDA AQUÍ)
+        // ====================================================================
+        let marginaliaContent = "";
 
-        let finalMd = "\n";
-        if (marginaliaContent.trim()) finalMd += `%%> ${marginaliaContent.trim()} %%\n`;
-        if (context) finalMd += `${context}\n`;
-        if (contextImageSyntax) finalMd += `${contextImageSyntax}\n`;
-        finalMd += `\n---\n`;
+        if (thought) {
+            // Dividimos el texto introducido basándonos en tu separador ";;"
+            const parts = thought.split(';;');
+            
+            // Mapeamos cada parte para inyectar la sintaxis de múltiples bloques
+            marginaliaContent = parts.map((part, index) => {
+                let trimmed = part.trim();
+                
+                // Si no es el último bloque, lo tratamos como Flashcard
+                if (index < parts.length - 1) {
+                    // Mantenemos el ";;" para la flashcard, cerramos el bloque %% y abrimos uno nuevo %%>
+                    return `${trimmed};; %%\n%%> `;
+                }
+                
+                // Si es el último bloque, es la explicación personal. No añadimos ";;"
+                return trimmed;
+            }).join('');
+        }
+
+        if (doodleSyntax) {
+            // Agregamos el doodle al final si existe
+            marginaliaContent += marginaliaContent ? `\n${doodleSyntax}` : doodleSyntax;
+        }
+        
+        marginaliaContent = marginaliaContent.trim();
+
+        // 📝 Plantilla por defecto
+        const defaultTemplate = "\n%%> {{text}} %%\n{{citation}}\n{{image}}\n\n---";
+        let templateStr = this.plugin.settings.omniCaptureTemplate || defaultTemplate;
+
+        // 🔄 Reemplazamos las variables dinámicas
+        let finalMd = templateStr
+            .replace(/{{text}}/gi, marginaliaContent)
+            .replace(/{{citation}}/gi, safeContext)
+            .replace(/{{image}}/gi, contextImageSyntax);
+
+        // 🧹 Limpieza Inteligente: 
+        // Si hay bloques vacíos (ej. pusiste un ";;" al final por accidente), esto lo limpia.
+        finalMd = finalMd.replace(/%%>\s*%%/g, '');
+
+        // 🚀 ¡SOPORTE TEMPLATER PARA OMNI-CAPTURE!
+        const templaterPlugin = (this.app as any).plugins.plugins["templater-obsidian"];
+        if (templaterPlugin && templaterPlugin.templater) {
+            try {
+                const activeContextFile = this.app.workspace.getActiveFile();
+                finalMd = await templaterPlugin.templater.parse_template(
+                    { target_file: activeContextFile, run_mode: 4 },
+                    finalMd
+                );
+            } catch (err) {
+                console.warn("Cornell Marginalia: Error de Templater en OmniCapture", err);
+            }
+        }
+
+        // Limpiamos saltos de línea excesivos
+        finalMd = finalMd.replace(/\n{4,}/g, '\n\n\n');
 
         // 4. INYECCIÓN
         let file = this.app.metadataCache.getFirstLinkpathDest(finalDestName, "");
@@ -304,7 +383,6 @@ export class OmniCaptureManager {
             let header = this.plugin.settings.zkMode ? `# 🗃️ ${finalDestName}\n` : `# 📥 ${finalDestName}\n`;
             
             if (this.plugin.settings.zkMode && this.plugin.settings.zkTemplatePath) {
-                // 🧠 INTELIGENCIA ZK: Leemos qué archivo tiene abierto el usuario ahora mismo
                 const activeFile = this.app.workspace.getActiveFile();
                 const activeSourceName = activeFile ? activeFile.basename : "No Active Source";
 
@@ -317,7 +395,7 @@ export class OmniCaptureManager {
                     title: finalDestName,
                     date: dateStr,
                     time: timeStr,
-                    source_note: activeSourceName // 🎯 Inyectamos inteligentemente el archivo activo
+                    source_note: activeSourceName
                 });
                 
                 if (templateData) header = templateData; 
@@ -423,6 +501,7 @@ interface CornellSettings {
     pinboardItemTemplatePath: string;
     canvasItemTemplatePath: string;
     omniCaptureFolder: string;
+    omniCaptureTemplate: string;
     responsiveMarginalia: boolean;
     responsiveThreshold: number;
     addons: Record<string, boolean>; 
@@ -509,6 +588,7 @@ const DEFAULT_SETTINGS: CornellSettings = {
     pinboardItemTemplatePath: '',
     canvasItemTemplatePath: '',
     omniCaptureFolder: '',
+    omniCaptureTemplate: "\n%%> {{text}} %%\n{{citation}}\n{{image}}\n\n---",
     responsiveMarginalia: false,
     responsiveThreshold: 850,
     blurExplanatoryMarginalia: false,
@@ -517,7 +597,6 @@ const DEFAULT_SETTINGS: CornellSettings = {
     trackerHistory: [],
     deleteCompletedTasks: false,
     enableTaskNotesIntegration: false,
-    
 },
     // 👇 LOS VALORES POR DEFECTO PARA LOS NUEVOS USUARIOS
     addons: {
@@ -760,22 +839,73 @@ if (isCode && !isCornellBlock) continue;
 
                 if (isCursorInside) continue;
 
-                // 👇 1. IDENTIFICAR SI ES FLASHCARD
+                // 👇 1. IDENTIFICAR SI ES FLASHCARD Y DEFINIR EL BLOQUE
                 let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
                 const isFlashcard = tempNoteContent.includes(";;");
 
                 if (isFlashcard) {
-                    decorationsData.push({
-                        from: line.from, to: line.from, type: 0,
-                        dec: Decoration.line({ class: "cornell-flashcard-target" })
-                    });
-                    // Borramos el ;; visualmente, pero conservamos pregunta y enlaces
+                    const lineNum = line.number;
+                    let startLineNum = lineNum;
+                    let endLineNum = lineNum;
+                    
+                    let textWithoutMarginalia = line.text.replace(/%%[><](.*?)%%/g, '').trim();
+                    textWithoutMarginalia = textWithoutMarginalia.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
+
+                    // Quitamos el '>' si es un callout para ver si la marginalia está realmente sola
+                    const isCalloutLine = textWithoutMarginalia.startsWith('>');
+                    let cleanTextForStandalone = textWithoutMarginalia;
+                    if (isCalloutLine) cleanTextForStandalone = cleanTextForStandalone.replace(/^>\s*/, '').trim();
+                    
+                    const isStandalone = cleanTextForStandalone === '';
+
+                    if (!isStandalone) {
+                        // 🧠 REGLA 1: INLINE (Toca texto)
+                        if (isCalloutLine) {
+                            // Callout: Expande hasta el último '>'
+                            while (startLineNum > 1 && state.doc.line(startLineNum - 1).text.trim().startsWith('>')) startLineNum--;
+                            while (endLineNum < state.doc.lines && state.doc.line(endLineNum + 1).text.trim().startsWith('>')) endLineNum++;
+                        } else {
+                            // Prosa o Viñetas: NO SE EXPANDE. Se queda en su línea, respetando el "esto ya no"
+                        }
+                    } else {
+                        // 🧠 REGLA 2: STANDALONE (No toca texto)
+                        let nextIdx = lineNum + 1;
+                        // Baja ignorando las líneas estéticas vacías
+                        while (nextIdx <= state.doc.lines && state.doc.line(nextIdx).text.replace(/%%[><](.*?)%%/g, '').trim() === '') nextIdx++;
+                        
+                        if (nextIdx <= state.doc.lines) {
+                            startLineNum = nextIdx;
+                            endLineNum = nextIdx;
+                            const targetText = state.doc.line(nextIdx).text.trim();
+                            
+                            if (targetText.startsWith('>')) {
+                                // Abajo hay un Callout: Pinta hasta el último '>'
+                                while (endLineNum < state.doc.lines && state.doc.line(endLineNum + 1).text.trim().startsWith('>')) endLineNum++;
+                            } else if (targetText.startsWith('```')) {
+                                // Abajo hay Código: Pinta todo el bloque de código
+                                endLineNum++;
+                                while (endLineNum <= state.doc.lines && !state.doc.line(endLineNum).text.trim().startsWith('```')) endLineNum++;
+                            }
+                            // Si es prosa abajo, NO SE EXPANDE (pinta solo esa línea y frena)
+                        }
+                    }
+
+                    for (let n = startLineNum; n <= endLineNum; n++) {
+                        const targetLine = state.doc.line(n);
+                        if (!decorationsData.some(d => d.from === targetLine.from && d.type === 0)) {
+                            decorationsData.push({
+                                from: targetLine.from, to: targetLine.from, type: 0,
+                                dec: Decoration.line({ class: "cornell-flashcard-target" })
+                            });
+                        }
+                    }
                     tempNoteContent = tempNoteContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
                 }
-
-                let matchedColor = null;
                 // 👇 2. ASIGNAMOS EL TEXTO PURIFICADO (Declarado una sola vez)
                 let finalNoteText = tempNoteContent; 
+
+                // ✨ SOLUCIÓN: Declaramos la variable con un color por defecto
+                let matchedColor = 'var(--text-accent)';
                 
                 for (const tag of settings.tags) {
                     if (finalNoteText.startsWith(tag.prefix)) {
@@ -899,15 +1029,20 @@ class ThreadMergeModal extends Modal {
         this.onSubmit = onSubmit;
     }
 
+    // --- MODAL DE FUSIÓN DE HILOS (DRAG & DROP) ---
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
         
         contentEl.createEl("h2", { text: "🗂️ Merge Threads" });
-        contentEl.createEl("p", { 
-            text: `You are moving the thread `,
-            cls: "cornell-modal-text"
-        }).innerHTML = `You are grouping <b>${this.sourceTag}</b> and <b>${this.targetTag}</b>.`;
+        
+        // 🛡️ SANITIZADO: Uso de la API de Obsidian en lugar de innerHTML
+        const descEl = contentEl.createEl("p", { cls: "cornell-modal-text" });
+        descEl.appendText("You are grouping ");
+        descEl.createEl("b", { text: this.sourceTag });
+        descEl.appendText(" and ");
+        descEl.createEl("b", { text: this.targetTag });
+        descEl.appendText(".");
         
         contentEl.createEl("p", { 
             text: "Enter a name for the new parent collection (e.g., 'abuelo'):", 
@@ -1408,9 +1543,9 @@ class OmniCaptureModal extends Modal {
     async saveCapture() {
         const thought = this.thoughtInput.value.trim();
         const context = this.clipboardInput.value.trim();
-        let rawDestInput = this.destinationInput.value.trim() || "Marginalia Inbox";
-        
-        let cleanDestName = rawDestInput.replace(/^\d{12,14}\s*-\s*/, '').trim();
+        // 🛡️ CÓDIGO SEGURO
+let rawDestInput = this.destinationInput.value.trim() || "Marginalia Inbox";
+let cleanDestName = sanitizeFileName(rawDestInput.replace(/^\d{12,14}\s*-\s*/, '').trim());
         if (!cleanDestName) cleanDestName = "Marginalia Inbox";
 
         let finalDestName = cleanDestName;
@@ -1730,6 +1865,15 @@ export class CornellNotesView extends ItemView {
     // NUEVO: Memoria para el filtro de "Ultra-Recientes" (Sesión activa)
     isRecentFilterActive: boolean = false;
 
+    // 📖 NUEVO: Memoria para el modo de salto directo a PDF++
+    isDirectPdfModeActive: boolean = false;
+
+    // 🧠 NUEVO: Memoria para el Active Recall en PDFs
+    isActiveRecallPdfMode: boolean = false;
+
+    // ⚡ NUEVO: Memoria para el Filtro de Flashcards
+    isFlashcardFilterActive: boolean = false;
+
     // 🚀 NUEVA MEMORIA RAM (Caché de Bóveda)
     private vaultCache: Map<string, { mtime: number, items: MarginaliaItem[] }> = new Map();
 
@@ -1739,6 +1883,7 @@ export class CornellNotesView extends ItemView {
 
     draggedSidebarItems: MarginaliaItem[] | null = null; 
     isGroupedByContent: boolean = false; 
+    isGroupedByFolder: boolean = false; // 📁 NUEVO: Memoria para la vista de carpetas
 
     pinboardItems: MarginaliaItem[] = [];
 
@@ -1766,6 +1911,7 @@ export class CornellNotesView extends ItemView {
     // 🧠 MEMORIA DEL OMNI-CAPTURE LATERAL
     static lastCapturedContext: string = "";
     static lastCapturedImageLength: number = 0;
+    static lastDraggedPayload: string = ""; //templater
     pendingDoodleData: ArrayBuffer | null = null;
     pendingClipboardImageData: ArrayBuffer | null = null;
     pendingClipboardImageExt: string = "png";
@@ -1852,8 +1998,7 @@ export class CornellNotesView extends ItemView {
         };
 
         
-        // ⬇️ A partir de aquí tu código sigue normal:
-        // saveBtn.onclick = async () => { ... }
+        
 
         // ⬇️ EL BOTÓN INTELIGENTE (Attach normal o Finish Blurting)
         const saveBtn = rightGrp.createEl('button', { cls: 'mod-cta' });
@@ -2270,6 +2415,226 @@ export class CornellNotesView extends ItemView {
             await this.scanNotes(); 
         };
 // hasta acaaaaaaa
+        // 📖 3. NUEVO BOTÓN: MODO SALTO DIRECTO PDF (El "Librito" - Ahora a la derecha)
+        const directPdfBtn = pillsContainer.createEl('span', { cls: 'cornell-color-pill', title: "Direct PDF Mode" });
+        
+        directPdfBtn.style.backgroundColor = this.isDirectPdfModeActive ? 'var(--interactive-accent)' : 'transparent';
+        directPdfBtn.style.border = '1px solid var(--background-modifier-border)';
+        directPdfBtn.style.color = this.isDirectPdfModeActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+        directPdfBtn.style.cursor = 'pointer';
+        directPdfBtn.style.position = 'relative';
+
+        setIcon(directPdfBtn, 'book'); 
+
+        const pdfSvg = directPdfBtn.querySelector('svg');
+        if (pdfSvg) {
+            pdfSvg.style.width = '14px'; 
+            pdfSvg.style.height = '14px';
+            pdfSvg.style.strokeWidth = '2.2';
+            pdfSvg.style.position = 'absolute';
+            pdfSvg.style.top = '50%';
+            pdfSvg.style.left = '50%';
+            pdfSvg.style.transform = 'translate(-50%, -50%)';
+        }
+
+        directPdfBtn.onclick = () => {
+            this.isDirectPdfModeActive = !this.isDirectPdfModeActive;
+            
+            // Actualizamos la UI del botón al instante
+            directPdfBtn.style.backgroundColor = this.isDirectPdfModeActive ? 'var(--interactive-accent)' : 'transparent';
+            directPdfBtn.style.color = this.isDirectPdfModeActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+            
+            new Notice(this.isDirectPdfModeActive ? "📖 Modo PDF Directo: Activado" : "📖 Modo PDF Directo: Desactivado");
+        };
+
+        // ⚡ 3.5 NUEVO BOTÓN: FILTRO DE FLASHCARDS (Solo ;;)
+        const flashcardFilterBtn = pillsContainer.createEl('span', { cls: 'cornell-color-pill', title: "Show only Flashcards (;;)" });
+        
+        flashcardFilterBtn.style.backgroundColor = this.isFlashcardFilterActive ? 'var(--interactive-accent)' : 'transparent';
+        flashcardFilterBtn.style.border = '1px solid var(--background-modifier-border)';
+        flashcardFilterBtn.style.color = this.isFlashcardFilterActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+        flashcardFilterBtn.style.cursor = 'pointer';
+        flashcardFilterBtn.style.position = 'relative';
+
+        setIcon(flashcardFilterBtn, 'layers'); 
+
+        const fcSvg = flashcardFilterBtn.querySelector('svg');
+        if (fcSvg) {
+            fcSvg.style.width = '14px'; 
+            fcSvg.style.height = '14px';
+            fcSvg.style.strokeWidth = '2.2';
+            fcSvg.style.position = 'absolute';
+            fcSvg.style.top = '50%';
+            fcSvg.style.left = '50%';
+            fcSvg.style.transform = 'translate(-50%, -50%)';
+        }
+
+        flashcardFilterBtn.onclick = () => {
+            this.isFlashcardFilterActive = !this.isFlashcardFilterActive;
+            
+            flashcardFilterBtn.style.backgroundColor = this.isFlashcardFilterActive ? 'var(--interactive-accent)' : 'transparent';
+            flashcardFilterBtn.style.color = this.isFlashcardFilterActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+            
+            this.applyFiltersAndRender(); 
+        };
+        // 🧠 4. NUEVO BOTÓN: ACTIVE RECALL EN PDF
+        const activeRecallPdfBtn = pillsContainer.createEl('span', { cls: 'cornell-color-pill', title: "Active Recall en PDF (Oculta los resaltados para repasar)" });
+        
+        activeRecallPdfBtn.style.backgroundColor = this.isActiveRecallPdfMode ? 'var(--color-purple)' : 'transparent';
+        activeRecallPdfBtn.style.border = '1px solid var(--background-modifier-border)';
+        activeRecallPdfBtn.style.color = this.isActiveRecallPdfMode ? 'white' : 'var(--text-muted)';
+        activeRecallPdfBtn.style.cursor = 'pointer';
+        activeRecallPdfBtn.style.position = 'relative';
+
+        setIcon(activeRecallPdfBtn, 'brain-circuit'); 
+
+        const arSvg = activeRecallPdfBtn.querySelector('svg');
+        if (arSvg) {
+            arSvg.style.width = '14px'; 
+            arSvg.style.height = '14px';
+            arSvg.style.strokeWidth = '2.2';
+            arSvg.style.position = 'absolute';
+            arSvg.style.top = '50%';
+            arSvg.style.left = '50%';
+            arSvg.style.transform = 'translate(-50%, -50%)';
+        }
+
+        // 🛡️ MEMORIA CACHÉ PARA EVITAR LAG
+        let currentSyncChain: HTMLElement[] = [];
+
+        activeRecallPdfBtn.onclick = () => {
+            this.isActiveRecallPdfMode = !this.isActiveRecallPdfMode;
+            
+            activeRecallPdfBtn.style.backgroundColor = this.isActiveRecallPdfMode ? 'var(--color-purple)' : 'transparent';
+            activeRecallPdfBtn.style.color = this.isActiveRecallPdfMode ? 'white' : 'var(--text-muted)';
+            
+            if (this.isActiveRecallPdfMode) {
+                document.body.classList.add('cornell-pdf-active-recall');
+                new Notice("🧠 Active Recall PDF: Activado (Pasa el ratón para revelar bloque completo)");
+
+                // --- 🪄 NUEVO MOTOR JS: ALGORITMO ESPACIAL CACHEADO ---
+                (this as any).pdfHoverSync = (e: MouseEvent) => {
+                    const target = e.target as HTMLElement;
+                    if (!target || !target.matches) return;
+
+                    // 🛑 ESCUDO ANTI-LAG: Si ya estamos iluminando este bloque, no re-calculamos nada
+                    if (currentSyncChain.includes(target)) return;
+
+                    if (target.matches('.pdf-plus-backlink, .rect-highlight, .pdf-highlight, .textLayer .highlight, .annotationLayer .highlight, .pdf-cropped-embed')) {
+                        
+                        // Limpiamos el grupo anterior antes de encender el nuevo
+                        currentSyncChain.forEach(el => el.classList.remove('cornell-reveal-sync'));
+                        currentSyncChain = [];
+
+                        target.classList.add('cornell-reveal-sync');
+                        currentSyncChain.push(target);
+
+                        // Escudo Anti-Crop
+                        if (target.classList.contains('rect-highlight') || target.closest('.pdf-cropped-embed') || target.tagName.toLowerCase() === 'img') {
+                            return; 
+                        }
+
+                        const page = target.closest('.page, .markdown-preview-view');
+                        if (!page) return;
+
+                        const allHighlights = Array.from(page.querySelectorAll('.pdf-plus-backlink, .pdf-highlight, .textLayer .highlight, .annotationLayer .highlight'))
+                            .filter(el => !el.classList.contains('rect-highlight') && !el.closest('.pdf-cropped-embed'));
+                        
+                        const targetIdx = allHighlights.indexOf(target);
+                        if (targetIdx === -1) return;
+
+                        const targetColor = window.getComputedStyle(target).backgroundColor;
+
+                        // Reacción hacia ARRIBA
+                        for (let i = targetIdx - 1; i >= 0; i--) {
+                            const el = allHighlights[i] as HTMLElement;
+                            const prevEl = allHighlights[i + 1] as HTMLElement; 
+                            
+                            if (window.getComputedStyle(el).backgroundColor === targetColor && 
+                                Math.abs(el.getBoundingClientRect().bottom - prevEl.getBoundingClientRect().top) < 45) {
+                                el.classList.add('cornell-reveal-sync');
+                                currentSyncChain.push(el);
+                            } else {
+                                break; 
+                            }
+                        }
+
+                        // Reacción hacia ABAJO
+                        for (let i = targetIdx + 1; i < allHighlights.length; i++) {
+                            const el = allHighlights[i] as HTMLElement;
+                            const prevEl = allHighlights[i - 1] as HTMLElement;
+                            
+                            if (window.getComputedStyle(el).backgroundColor === targetColor && 
+                                Math.abs(el.getBoundingClientRect().top - prevEl.getBoundingClientRect().bottom) < 45) {
+                                el.classList.add('cornell-reveal-sync');
+                                currentSyncChain.push(el);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                };
+
+                (this as any).pdfMouseOutSync = (e: MouseEvent) => {
+                    const related = e.relatedTarget as HTMLElement;
+                    // 🛑 ESCUDO ANTI-LAG: Si el ratón se mueve a otra línea del MISMO párrafo, no apagamos la luz
+                    if (related && currentSyncChain.includes(related)) return;
+
+                    currentSyncChain.forEach(el => el.classList.remove('cornell-reveal-sync'));
+                    currentSyncChain = [];
+                };
+
+                document.body.addEventListener('mouseover', (this as any).pdfHoverSync);
+                document.body.addEventListener('mouseout', (this as any).pdfMouseOutSync);
+
+            } else {
+                document.body.classList.remove('cornell-pdf-active-recall');
+                new Notice("🧠 Active Recall PDF: Desactivado");
+                
+                if ((this as any).pdfHoverSync) document.body.removeEventListener('mouseover', (this as any).pdfHoverSync);
+                if ((this as any).pdfMouseOutSync) document.body.removeEventListener('mouseout', (this as any).pdfMouseOutSync);
+                currentSyncChain.forEach(el => el.classList.remove('cornell-reveal-sync'));
+                currentSyncChain = [];
+            }
+        };
+
+        // 📁 3. BOTÓN DE CARPETAS (Solo visible en Vault)
+        const folderBtn = pillsContainer.createEl('span', { cls: 'cornell-color-pill', title: "Agrupar por Carpetas y Archivos" });
+        
+        folderBtn.style.backgroundColor = this.isGroupedByFolder ? 'var(--interactive-accent)' : 'transparent';
+        folderBtn.style.border = '1px solid var(--background-modifier-border)';
+        folderBtn.style.color = this.isGroupedByFolder ? 'var(--text-on-accent)' : 'var(--text-muted)';
+        folderBtn.style.cursor = 'pointer';
+        folderBtn.style.position = 'relative';
+        
+        // 👁️ La magia condicional: Solo existe visualmente si estamos en 'vault'
+        folderBtn.style.display = this.currentTab === 'vault' ? 'inline-block' : 'none';
+
+        setIcon(folderBtn, 'folder-tree'); // Ícono nativo de carpetas
+        
+        const fSvg = folderBtn.querySelector('svg');
+        if (fSvg) {
+            fSvg.style.width = '14px'; 
+            fSvg.style.height = '14px';
+            fSvg.style.strokeWidth = '2.2';
+            fSvg.style.position = 'absolute';
+            fSvg.style.top = '50%'; 
+            fSvg.style.left = '50%';
+            fSvg.style.transform = 'translate(-50%, -50%)';
+        }
+
+        folderBtn.onclick = () => {
+            this.isGroupedByFolder = !this.isGroupedByFolder;
+            
+            // Actualizamos la UI del botón al instante
+            folderBtn.style.backgroundColor = this.isGroupedByFolder ? 'var(--interactive-accent)' : 'transparent';
+            folderBtn.style.color = this.isGroupedByFolder ? 'var(--text-on-accent)' : 'var(--text-muted)';
+            
+            this.applyFiltersAndRender(); 
+        };
+
+        container.createDiv({ cls: 'cornell-stitch-banner', text: '' }).style.display = 'none';
+        // hasta acaaaaaaaa!!!!
         container.createDiv({ cls: 'cornell-stitch-banner', text: '' }).style.display = 'none';
         container.createDiv({ cls: 'cornell-sidebar-content' });
 
@@ -2565,8 +2930,11 @@ export class CornellNotesView extends ItemView {
             // ⚡ LÓGICA ULTRA-RECIENTE
             const FRESHNESS_WINDOW_MS = 3600000; 
             const matchesRecent = !this.isRecentFilterActive || (item.file && (Date.now() - item.file.stat.mtime < FRESHNESS_WINDOW_MS));
+            
+            // ⚡ LÓGICA DE FLASHCARDS
+            const matchesFlashcard = !this.isFlashcardFilterActive || item.rawText.includes(';;');
 
-            return matchesSearch && matchesColor && matchesRecent;
+            return matchesSearch && matchesColor && matchesRecent && matchesFlashcard;
         };
 
         return this.cachedItems.filter(matchesFilter);
@@ -2787,43 +3155,47 @@ export class CornellNotesView extends ItemView {
                         const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)(?:\s*%%)?\s*$/);
                         const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
 
-                        // 🕵️‍♂️ PRE-CALCULAR CITATION (CONTEXTO) PARA MEMORIA RAM
-                        let originalLine = lines[i] || '';
-                        originalLine = originalLine.replace(/%%[><](.*?)%%/g, '').trim();
-                        originalLine = originalLine.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
-                        if (!originalLine && i > 0) {
-                            originalLine = lines[i - 1].trim();
-                        }
-                        
-                        let searchIdx = i + 1; 
-                        let citation = "";
-                        let insideEmbed = false; // 🧠 Nuevo estado para atrapar imágenes de PDF++ multilínea
-                        
-                        while (searchIdx < lines.length) {
-                            const lineStr = lines[searchIdx].trim();
-                            
-                            // Si estamos capturando un PDF++ que hizo salto de línea, seguimos atrapando hasta que cierre
-                            if (insideEmbed) {
-                                citation += `${lineStr}\n`; 
-                                if (lineStr.includes(']]') || lineStr.endsWith(')')) insideEmbed = false;
-                            } 
-                            // Atrapamos blockquotes normales
-                            else if (lineStr.startsWith('>')) {
-                                citation += `${lineStr}\n`; 
-                            } 
-                            // Atrapamos imágenes/PDFs inmediatamente debajo (El estilo que usa tu OmniCapture)
-                            else if (lineStr.startsWith('![[')) {
-                                citation += `${lineStr}\n`; 
-                                if (!lineStr.includes(']]') && !lineStr.endsWith(')')) insideEmbed = true; 
-                            } 
-                            // Ignoramos anclas y líneas vacías intermedias
-                            else if (lineStr.startsWith('^') || lineStr === '') {
-                            } else {
-                                break; 
+                       // 🕵️‍♂️ PRE-CALCULAR CITATION (CONTEXTO) PARA MEMORIA RAM
+                        let startLine = i;
+                        let endLine = i;
+                        let textWithoutMarginalia = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                        textWithoutMarginalia = textWithoutMarginalia.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
+
+                        let isTargetingCallout = false;
+
+                        if (lines[i].trim().startsWith('>')) {
+                            // Caso 1: La marginalia está DENTRO del Callout
+                            isTargetingCallout = true;
+                        } else if (textWithoutMarginalia === '') {
+                            // Caso 2: La marginalia está SOLA. Miramos si abajo hay un Callout.
+                            let nextIdx = i + 1;
+                            while (nextIdx < lines.length && lines[nextIdx].trim() === '') nextIdx++;
+                            if (nextIdx < lines.length && lines[nextIdx].trim().startsWith('>')) {
+                                isTargetingCallout = true;
+                                startLine = nextIdx;
+                                endLine = nextIdx;
                             }
-                            searchIdx++;
                         }
-                        const finalContext = citation ? citation.trim() : originalLine;
+
+                        // Expandimos los límites
+                        if (isTargetingCallout) {
+                            // Atrapamos TODO el Callout (sube y baja por los '>')
+                            while (startLine > 0 && lines[startLine - 1].trim().startsWith('>')) startLine--;
+                            while (endLine < lines.length - 1 && lines[endLine + 1].trim().startsWith('>')) endLine++;
+                        } else {
+                            // Caso 3: Prosa. Expandimos hasta encontrar un salto de línea vacío o un Callout.
+                            while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].trim().startsWith('>')) startLine--;
+                            while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].trim().startsWith('>')) endLine++;
+                        }
+
+                        let fullContext = "";
+                        for (let j = startLine; j <= endLine; j++) {
+                            let cleanLine = lines[j].replace(/%%[><](.*?)%%/g, '').trim();
+                            cleanLine = cleanLine.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
+                            if (cleanLine) fullContext += `${cleanLine}\n`;
+                        }
+
+                        const finalContext = fullContext.trim();
 
                         fileItems.push({
                             text: cleanText,
@@ -2833,7 +3205,7 @@ export class CornellNotesView extends ItemView {
                             line: i,
                             blockId: existingBlockId,
                             outgoingLinks: outgoingLinks,
-                            context: finalContext // 👈 Lo guardamos en RAM
+                            context: finalContext // 👈 Contexto perfecto, respeta los saltos de línea.
                         });
                     }
                 }
@@ -2878,12 +3250,13 @@ export class CornellNotesView extends ItemView {
             return;
         }
 
-        const isFilterActive = this.searchQuery.length > 0 || this.activeColorFilters.size > 0;
+        const isFilterActive = this.searchQuery.length > 0 || this.activeColorFilters.size > 0 || this.isFlashcardFilterActive;
 
         const matchesFilter = (item: MarginaliaItem) => {
             const matchesSearch = item.text.toLowerCase().includes(this.searchQuery) || item.file.basename.toLowerCase().includes(this.searchQuery);
             const matchesColor = this.activeColorFilters.size === 0 || this.activeColorFilters.has(item.color);
-            return matchesSearch && matchesColor;
+            const matchesFlashcard = !this.isFlashcardFilterActive || item.rawText.includes(';;');
+            return matchesSearch && matchesColor && matchesFlashcard;
         };
 
        if (this.currentTab === 'threads') {
@@ -2962,7 +3335,11 @@ export class CornellNotesView extends ItemView {
                 };
                 this.renderResults(recentResults, contentDiv);
             } 
-            // 2. MODO AGRUPADO POR CONTENIDO
+            // 📁 2. MODO AGRUPADO POR CARPETAS (Solo activo en Vault)
+            else if (this.currentTab === 'vault' && this.isGroupedByFolder) {
+                this.renderFolderTree(filtered, contentDiv, isFilterActive); // ✅ El nombre correcto
+            }
+            // 3. MODO AGRUPADO POR CONTENIDO
             else if (this.isGroupedByContent) {
                 const groupedResults: Record<string, MarginaliaItem[]> = {};
                 filtered.forEach(item => {
@@ -3351,7 +3728,7 @@ export class CornellNotesView extends ItemView {
                 marginaliaDOM.setAttr('draggable', 'false'); 
             }
 
-            // Drag & Drop
+            
             // Drag & Drop
             itemWrapper.addEventListener('dragstart', (e: DragEvent) => { 
                 draggedIndex = currentIndex; 
@@ -3362,34 +3739,40 @@ export class CornellNotesView extends ItemView {
                     e.dataTransfer.effectAllowed = 'copyMove';
                     
                     let targetId = item.blockId;
-                    // Generar ID solo si proviene de un archivo real (ignorar nodos esqueleto)
                     if (!targetId && item.file) { 
                         targetId = Math.random().toString(36).substring(2, 8);
                         item.blockId = targetId; 
                         this.injectBackgroundBlockId(item.file, item.line, targetId);
                     }
 
-                    // 📝 MOTOR DE PLANTILLAS PARA EL PINBOARD
-                    // @ts-ignore
-                    const dateStr = window.moment().format('YYYY-MM-DD');
-                    // @ts-ignore
-                    const timeStr = window.moment().format('HH:mm');
-                    
-                    const cleanText = this.cleanExportText(item.text);
-                    const sourceLink = item.file ? `[[${item.file.basename}#^${targetId}]]` : "";
-                    const citationText = item.context || "";
-                    const rootTitle = item.file ? item.file.basename : "Pinboard Node";
-                    
-                    let dragPayload = this.plugin.settings.dragDropTemplate || "- {{text}} {{source_note}}";
-                    
-                    dragPayload = dragPayload.replace(/{{title}}/g, rootTitle);
-                    dragPayload = dragPayload.replace(/{{date}}/g, dateStr);
-                    dragPayload = dragPayload.replace(/{{time}}/g, timeStr);
-                    dragPayload = dragPayload.replace(/{{text}}/g, cleanText);
-                    dragPayload = dragPayload.replace(/{{source_note}}/g, sourceLink);
-                    dragPayload = dragPayload.replace(/{{citation}}/g, citationText);
+                    // 🚀 EXCALIDRAW SPLIT-MODE (Activado con CTRL / CMD)
+                    if (e.ctrlKey || e.metaKey) {
+                        let cleanText = this.cleanExportText(item.text);
+                        if (!cleanText) cleanText = item.text.replace(/!\[\[(.*?)\]\]/g, '🖼️ [Image]').trim() || "Pinboard Node";
+                        
+                        let citationText = item.context || "";
+                        
+                        // 🧽 SANITIZADOR MULTILÍNEA: Aplasta saltos de línea para que Excalidraw no se rompa con PDF++
+                        cleanText = cleanText.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
+                        citationText = citationText.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
-                    e.dataTransfer.setData('text/plain', dragPayload.trim());
+                        // 1. El Ratón lleva SOLO el texto (La Marginalia) al lienzo
+                        e.dataTransfer.setData('text/plain', cleanText);
+                        e.dataTransfer.setData('application/cornell-marginalia-payload', cleanText);
+                        
+                        // 2. El Portapapeles se traga la Cita (PDF++)
+                        if (citationText) {
+                            navigator.clipboard.writeText(citationText);
+                            new Notice("🎨 Excalidraw: Marginalia soltada. ¡Presiona Ctrl+V para pegar el PDF++!");
+                        } else {
+                            new Notice("🎨 Excalidraw: Marginalia soltada en el lienzo.");
+                        }
+                    } else {
+                        // 📝 MODO NORMAL
+                        let dragPayload = this.buildThreadDropText(item, 0, new Set<string>(), undefined, false);
+                        e.dataTransfer.setData('text/plain', dragPayload.trim());
+                        CornellNotesView.lastDraggedPayload = dragPayload.trim(); // ESTA MEMORIA para templeter!
+                    }
                 }
             });
             // esta linea la toque, realidad solo terminaba hasta stopPropagation (); } ) ;
@@ -3415,7 +3798,14 @@ export class CornellNotesView extends ItemView {
                     this.applyFiltersAndRender();
                 }
             });
-            itemWrapper.addEventListener('dragend', () => { itemWrapper.style.opacity = '1'; draggedIndex = null; });
+            itemWrapper.addEventListener('dragend', () => { 
+    itemWrapper.style.opacity = '1'; 
+    draggedIndex = null; 
+    this.triggerTemplaterAfterDrop();
+
+    // ⚡ INVOCAMOS AL NUEVO MOTOR
+    
+});
         });
 
         // --- 🎯 NUEVA ZONA DE CAÍDA INVISIBLE AL FINAL ---
@@ -3758,17 +4148,17 @@ review_stage: 1
             // Enlace con ancla al bloque exacto preservado
             const sourceLink = item.file ? `[[${item.file.basename}#^${targetId}|${item.file.basename}]]` : "Custom";
 
-            // 🧼 PURIFICAMOS EL TEXTO ANTES DE ENSAMBLARLO
-            const cleanExportItemText = this.cleanExportText(item.text);
+            // 🧼 PURIFICAMOS Y DESARMAMOS TEMPLATER EN EL TEXTO DE ENTRADA
+const cleanExportItemText = sanitizeForTemplater(this.cleanExportText(item.text));
 
-            // 🎨 3. RENDERIZADO BASADO EN PLANTILLA PERSONALIZADA
-            if (itemTemplateRaw) {
-                let currentItemContent = itemTemplateRaw;
-                currentItemContent = currentItemContent.replace(/{{text}}/g, cleanExportItemText); // 👈 Usamos el texto limpio
-                
-                // Si hay cita de PDF, usamos la cita. Si no, usamos el texto de la línea original.
-                const finalCitation = citation ? citation.trim() : contextText;
-                currentItemContent = currentItemContent.replace(/{{citation}}/g, finalCitation);
+// 🎨 3. RENDERIZADO BASADO EN PLANTILLA PERSONALIZADA
+if (itemTemplateRaw) {
+    let currentItemContent = itemTemplateRaw;
+    currentItemContent = currentItemContent.replace(/{{text}}/g, cleanExportItemText); 
+    
+    // 🛡️ Sanitizamos también el contexto/cita por si el usuario copió código malicioso de un PDF
+    const finalCitation = sanitizeForTemplater(citation ? citation.trim() : contextText);
+    currentItemContent = currentItemContent.replace(/{{citation}}/g, finalCitation);
                 
                 currentItemContent = currentItemContent.replace(/{{source_note}}/g, sourceLink);
                 
@@ -3784,7 +4174,20 @@ review_stage: 1
                 content += `*— 🔗 ${sourceLink}*\n\n---\n\n`; 
             }
         }
-
+        // NUEVO: INTEGRACIÓN TEMPLATER (PARSEADO EN LOTE / BATCH)
+        // Pasamos el string final completo una sola vez por Templater antes de guardarlo
+        const templaterPlugin = (this.app as any).plugins.plugins["templater-obsidian"];
+        if (templaterPlugin && templaterPlugin.templater) {
+            try {
+                const activeContextFile = this.app.workspace.getActiveFile();
+                content = await templaterPlugin.templater.parse_template(
+                    { target_file: activeContextFile, run_mode: 4 },
+                    content
+                );
+            } catch (err) {
+                console.warn("Cornell Marginalia: Error de Templater en Pinboard", err);
+            }
+        }
         try {
             const newFile = await this.plugin.app.vault.create(fileName, content);
             await this.plugin.app.workspace.getLeaf(true).openFile(newFile);
@@ -3919,71 +4322,66 @@ review_stage: 1
         let parentAtLevel: Record<number, string> = {};
 
         for (const item of this.pinboardItems) {
-            const nodeId = genId();
+    const nodeId = genId();
 
-            if (item.isTitle) {
-                const titleText = item.text.startsWith('#') ? item.text : `# ${item.text}`;
-                nodes.push({ id: nodeId, type: "text", text: titleText, x: 0, y: currentY, width: 350, height: 100, color: "1" }); 
-                lastTitleId = nodeId;
-                parentAtLevel = {}; 
-                parentAtLevel[-1] = nodeId; 
-                currentY += 150; 
-            } else if (item.isCustom) {
-                // 🦴 NODO ESQUELETO: Una caja de texto simple
-                const indent = item.indentLevel || 0;
-                const baseX = (indent + 1) * 450;
-                nodes.push({ id: nodeId, type: "text", text: `**${item.text}**`, x: baseX, y: currentY, width: 250, height: 60, color: "5" }); // Color 5 = Azul claro
-                
-                const parentId = parentAtLevel[indent - 1] || lastTitleId;
-                if (parentId) edges.push({ id: genId(), fromNode: parentId, fromSide: "right", toNode: nodeId, toSide: "left" });
-                parentAtLevel[indent] = nodeId;
-                
-                currentY += 100; // Ocupa menos espacio
-            } else {
-                const indent = item.indentLevel || 0;
-                const baseX = (indent + 1) * 450; // Calculamos la posición X (Sangría)
+    if (item.isTitle) {
+        // 🛡️ Sanitizamos el título
+        const rawTitle = item.text.startsWith('#') ? item.text : `# ${item.text}`;
+        const titleText = sanitizeForTemplater(rawTitle);
+        nodes.push({ id: nodeId, type: "text", text: titleText, x: 0, y: currentY, width: 350, height: 100, color: "1" }); 
+        lastTitleId = nodeId;
+        parentAtLevel = {}; 
+        parentAtLevel[-1] = nodeId; 
+        currentY += 150; 
+    } else if (item.isCustom) {
+        // 🛡️ Sanitizamos el nodo esqueleto
+        const safeSkeletonText = sanitizeForTemplater(item.text);
+        const indent = item.indentLevel || 0;
+        const baseX = (indent + 1) * 450;
+        nodes.push({ id: nodeId, type: "text", text: `**${safeSkeletonText}**`, x: baseX, y: currentY, width: 250, height: 60, color: "5" }); 
+        
+        const parentId = parentAtLevel[indent - 1] || lastTitleId;
+        if (parentId) edges.push({ id: genId(), fromNode: parentId, fromSide: "right", toNode: nodeId, toSide: "left" });
+        parentAtLevel[indent] = nodeId;
+        
+        currentY += 100; 
+    } else {
+        const indent = item.indentLevel || 0;
+        const baseX = (indent + 1) * 450; 
 
-                let targetId = item.blockId;
-                if (!targetId) {
-                    targetId = Math.random().toString(36).substring(2, 8);
-                    item.blockId = targetId;
-                    await this.injectBackgroundBlockId(item.file, item.line, targetId);
-                }
+        let targetId = item.blockId;
+        if (!targetId) {
+            targetId = Math.random().toString(36).substring(2, 8);
+            item.blockId = targetId;
+            await this.injectBackgroundBlockId(item.file, item.line, targetId);
+        }
 
-                // 🧠 MAGIA DE IMÁGENES: Rescatamos el texto real y lo convertimos
-                let canvasNoteContent = item.rawText;
-                const hasImage = /img:\s*\[\[(.*?)\]\]/gi.test(canvasNoteContent);
-                
-                // Convertimos img:[[archivo.png]] a ![[archivo.png]] para que Canvas lo dibuje
-                canvasNoteContent = canvasNoteContent.replace(/img:\s*\[\[(.*?)\]\]/gi, '![[$1]]');
+        let canvasNoteContent = item.rawText;
+        const hasImage = /img:\s*\[\[(.*?)\]\]/gi.test(canvasNoteContent);
+        canvasNoteContent = canvasNoteContent.replace(/img:\s*\[\[(.*?)\]\]/gi, '![[$1]]');
 
-                // 🧼 Aplicamos el Purificador Universal
-                canvasNoteContent = this.cleanExportText(canvasNoteContent);
+        // 🛡️ Aplicamos el Purificador Universal Y la Sanitización de Templater
+        canvasNoteContent = sanitizeForTemplater(this.cleanExportText(canvasNoteContent));
 
-                // 📌 1. NODO MARGINALIA (AHORA CON MOTOR DE PLANTILLAS)
-                const sourceLink = `[[${item.file.basename}#^${targetId}|🔗 Origin]]`;
-                let noteText = "";
-                
-                if (canvasTemplateRaw) {
-                    noteText = canvasTemplateRaw;
-                    noteText = noteText.replace(/{{text}}/g, canvasNoteContent);
-                    noteText = noteText.replace(/{{source_note}}/g, sourceLink);
-                } else {
-                    // Fallback clásico
-                    noteText = `**Marginalia:**\n${canvasNoteContent}\n\n${sourceLink}`;
-                }
-                
-                // Si la nota tiene un doodle, hacemos la tarjeta más alta para que quepa bien
-                const nodeHeight = hasImage ? 320 : 140;
-                
-                nodes.push({ id: nodeId, type: "text", text: noteText, x: baseX, y: currentY, width: 300, height: nodeHeight, color: "4" }); // Color 4 = Verde
+        const sourceLink = `[[${item.file.basename}#^${targetId}|🔗 Origin]]`;
+        let noteText = "";
+        
+        if (canvasTemplateRaw) {
+            noteText = canvasTemplateRaw;
+            noteText = noteText.replace(/{{text}}/g, canvasNoteContent);
+            noteText = noteText.replace(/{{source_note}}/g, sourceLink);
+        } else {
+            noteText = `**Marginalia:**\n${canvasNoteContent}\n\n${sourceLink}`;
+        }
+        
+        const nodeHeight = hasImage ? 320 : 140;
+        nodes.push({ id: nodeId, type: "text", text: noteText, x: baseX, y: currentY, width: 300, height: nodeHeight, color: "4" }); 
 
-                // 🧵 2. CONECTAR CON SU PADRE
-                const parentId = parentAtLevel[indent - 1] || lastTitleId;
-                if (parentId) {
-                    edges.push({ id: genId(), fromNode: parentId, fromSide: "right", toNode: nodeId, toSide: "left" });
-                }
-                parentAtLevel[indent] = nodeId;
+        const parentId = parentAtLevel[indent - 1] || lastTitleId;
+        if (parentId) {
+            edges.push({ id: genId(), fromNode: parentId, fromSide: "right", toNode: nodeId, toSide: "left" });
+        }
+        parentAtLevel[indent] = nodeId;
 
                 // 📚 3. EXTRAER EL TEXTO DEL CONTEXTO (BLOQUE COMPLETO)
                 const fileContent = await this.plugin.app.vault.cachedRead(item.file);
@@ -4017,20 +4415,36 @@ review_stage: 1
                 }
                 contextText = contextText.trim();
 
-                // 📄 4. NODO CONTEXTO (LA RAMA)
-                if (contextText) {
-                    const contextNodeId = genId();
-                    nodes.push({ id: contextNodeId, type: "text", text: `> ${contextText}`, x: baseX + 400, y: currentY - 20, width: 450, height: Math.max(180, nodeHeight) });
-                    edges.push({ id: genId(), fromNode: nodeId, fromSide: "right", toNode: contextNodeId, toSide: "left" });
-                }
-
-                // Bajamos el cursor según si pusimos una imagen grande o una nota pequeña
-                currentY += hasImage ? 360 : 220; 
-            }
+                // 🛡️ Cuando creas el nodo de contexto, sanitízalo también:
+        if (contextText) {
+            const safeContextText = sanitizeForTemplater(contextText.trim());
+            const contextNodeId = genId();
+            nodes.push({ id: contextNodeId, type: "text", text: `> ${safeContextText}`, x: baseX + 400, y: currentY - 20, width: 450, height: Math.max(180, nodeHeight) });
+            edges.push({ id: genId(), fromNode: nodeId, fromSide: "right", toNode: contextNodeId, toSide: "left" });
         }
 
-        // Ensamblamos el JSON del Canvas
-        const canvasData = JSON.stringify({ nodes, edges }, null, 2);
+        currentY += hasImage ? 360 : 220; 
+    }
+}
+
+        // Ensamblamos el JSON del Canvas (Cambiamos const a let)
+        let canvasData = JSON.stringify({ nodes, edges }, null, 2);
+
+        // ⚡ NUEVO: INTEGRACIÓN TEMPLATER (PARSEADO EN LOTE PARA JSON)
+        const templaterPlugin = (this.app as any).plugins.plugins["templater-obsidian"];
+        if (templaterPlugin && templaterPlugin.templater) {
+            try {
+                const activeContextFile = this.app.workspace.getActiveFile();
+                // Parseamos el string JSON completo. Templater reemplazará los tags <% %> 
+                // que estén dentro de los valores de texto de los nodos.
+                canvasData = await templaterPlugin.templater.parse_template(
+                    { target_file: activeContextFile, run_mode: 4 },
+                    canvasData
+                );
+            } catch (err) {
+                console.warn("Cornell Marginalia: Error de Templater en Canvas", err);
+            }
+        }
 
         try {
             const newFile = await this.plugin.app.vault.create(fileName, canvasData);
@@ -4130,12 +4544,14 @@ review_stage: 1
                 }
                 const dragPayload = `[[${representativeItem.file.basename}#^${targetId}|Group: ${representativeItem.text}]]`;
                 event.dataTransfer.setData('text/plain', dragPayload);
+                CornellNotesView.lastDraggedPayload = dragPayload; // 👈 GUARDAMOS EN MEMORIA
                 this.draggedSidebarItems = items; 
             });
 
             headerDiv.addEventListener('dragend', () => {
                 this.draggedSidebarItems = null; 
                 headerDiv.removeClass('cornell-drop-target');
+                this.triggerTemplaterAfterDrop();
             });
 
             headerDiv.addEventListener('dragenter', (e: DragEvent) => {
@@ -4193,9 +4609,80 @@ review_stage: 1
 
         if (totalFound === 0) container.createEl('p', { text: 'No notes match your search.', cls: 'cornell-sidebar-empty' });
     }
+    // 📁 NUEVO MOTOR: Convierte rutas físicas en Cajas Semánticas
+    renderFolderTree(items: MarginaliaItem[], container: HTMLElement, isFilteredMode: boolean = false) {
+        container.empty();
+        if (items.length === 0) {
+            container.createEl('p', { text: 'No notes match your search.', cls: 'cornell-sidebar-empty' });
+            return;
+        }
 
+        const tree = new Map<string, SemanticTreeNode>();
+
+        for (const item of items) {
+            if (!item.file) continue;
+            
+            // 1. Extraemos la ruta (Ej: "Facultad/Medicina/Cardio.md") y le quitamos el .md
+            const cleanPath = item.file.path.replace(/\.md$/i, '');
+            const parts = cleanPath.split('/');
+
+            let currentLevel = tree;
+            // 🛡️ Le ponemos un prefijo único para que sus configuraciones de color no choquen con los #tags normales
+            let currentPath = "📁"; 
+
+            for (let i = 0; i < parts.length; i++) {
+                const part = parts[i];
+                currentPath += `/${part}`;
+
+                if (!currentLevel.has(part)) {
+                    currentLevel.set(part, {
+                        name: part,
+                        fullPath: currentPath,
+                        children: new Map(),
+                        items: []
+                    });
+                }
+
+                const node = currentLevel.get(part)!;
+
+                // Si es el último nivel (el archivo en sí), inyectamos la marginalia
+                if (i === parts.length - 1) {
+                    node.items.push(item);
+                }
+
+                currentLevel = node.children;
+            }
+        }
+
+        // 2. Reutilizamos tu maravilloso sistema de Anclaje (Pin)
+        if (!this.plugin.settings.pinnedThreads) this.plugin.settings.pinnedThreads = [];
+        
+        const pinnedRoots: SemanticTreeNode[] = [];
+        const unpinnedRoots: SemanticTreeNode[] = [];
+
+        tree.forEach(node => {
+            if (this.plugin.settings.pinnedThreads.includes(node.fullPath)) {
+                pinnedRoots.push(node);
+            } else {
+                unpinnedRoots.push(node);
+            }
+        });
+
+        // 3. Enviamos el árbol a tu renderizador nativo (Hereda pines, colores y botón de Board)
+        pinnedRoots.forEach(node => this.renderSemanticTree(node, container, isFilteredMode, 0));
+
+        if (pinnedRoots.length > 0 && unpinnedRoots.length > 0) {
+            const sep = container.createDiv();
+            sep.style.height = '1px';
+            sep.style.backgroundColor = 'var(--background-modifier-border)';
+            sep.style.margin = '15px 0';
+            sep.style.opacity = '0.5';
+        }
+
+        unpinnedRoots.forEach(node => this.renderSemanticTree(node, container, isFilteredMode, 0));
+    }
     
-
+// tag boxes
     renderThreads(rootItems: MarginaliaItem[], container: HTMLElement, isFilteredMode: boolean = false) {
         container.empty();
         if (rootItems.length === 0) {
@@ -4375,49 +4862,61 @@ review_stage: 1
         // Atributos de datos que usaremos en el Paso 2 para la "Fagocitación" (Drag & Drop)
         groupEl.setAttribute('data-semantic-path', node.fullPath);
 
-        // 2. Cabecera del recuadro (Hereda el nombre de la jerarquía)
+        // 2. Cabecera del recuadro
         const headerEl = groupEl.createDiv({ cls: 'cornell-thread-header' });
         headerEl.style.fontWeight = 'bold';
         headerEl.style.padding = '6px 10px';
         headerEl.style.backgroundColor = 'var(--background-secondary)';
-        headerEl.style.borderBottom = '1px solid var(--background-modifier-border)';
         headerEl.style.display = 'flex';
         headerEl.style.alignItems = 'center';
         headerEl.style.gap = '6px';
         headerEl.style.cursor = 'pointer';
+
+        // 🧠 INTELIGENCIA DE MODO (Detecta si es un Tag o una Carpeta Física)
+        const isFolderMode = node.fullPath.startsWith('📁');
+        const isFile = isFolderMode && node.children.size === 0;
 
         // ORDEN VISUAL 1: 🔘 Icono de colapso (flecha)
         const toggleIcon = headerEl.createSpan({ cls: 'cornell-collapse-icon' });
         setIcon(toggleIcon, 'chevron-down');
         toggleIcon.style.color = 'var(--text-muted)';
         
-        // 🧠 Leemos la memoria para saber si esta caja es VIP
         if (!this.plugin.settings.pinnedThreads) this.plugin.settings.pinnedThreads = [];
         const isPinned = this.plugin.settings.pinnedThreads.includes(node.fullPath);
 
-        // ORDEN VISUAL 2: 📁 Icono semántico (carpeta o chincheta)
+        // ORDEN VISUAL 2: 📁 Icono dinámico (Tag, Carpeta o Archivo)
         const iconSpan = headerEl.createSpan();
-        setIcon(iconSpan, isPinned ? 'pin' : (depth === 0 ? 'folder-closed' : 'folder-tree')); 
-        if (isPinned) iconSpan.style.color = 'var(--interactive-accent)'; // Destello visual sutil
+        if (isPinned) {
+            setIcon(iconSpan, 'pin');
+            iconSpan.style.color = 'var(--interactive-accent)';
+        } else if (isFolderMode) {
+            setIcon(iconSpan, isFile ? 'file-text' : 'folder');
+            if (isFile) iconSpan.style.color = 'var(--interactive-accent)';
+        } else {
+            setIcon(iconSpan, depth === 0 ? 'folder-closed' : 'folder-tree'); 
+        }
         
-        // ORDEN VISUAL 3: 📝 Texto (Nombre de la carpeta)
-        headerEl.createSpan({ text: node.name.toUpperCase() });
+        // ORDEN VISUAL 3: 📝 Texto
+        const displayName = isFolderMode ? node.name : node.name.toUpperCase();
+        headerEl.createSpan({ text: displayName });
 
-        // ORDEN VISUAL 4: 🎛️ CONTROLES HOVER (Tirados a la derecha con auto-margin)
-        // ==========================================
+        if (isFile) {
+            headerEl.createSpan({ text: `(${node.items.length})`, attr: { style: 'margin-left: 4px; font-size: 0.85em; color: var(--text-muted); font-weight: normal;' }});
+        }
+
+        // ORDEN VISUAL 4: 🎛️ CONTROLES HOVER (Botones mágicos)
         const controlsEl = headerEl.createDiv({ cls: 'cornell-thread-controls' });
-        controlsEl.style.marginLeft = 'auto'; // Empuja los botones a la derecha del todo
+        controlsEl.style.marginLeft = 'auto'; 
         controlsEl.style.display = 'flex';
         controlsEl.style.gap = '10px';
-        controlsEl.style.opacity = '0'; // Invisibles por defecto
+        controlsEl.style.opacity = '0'; 
         controlsEl.style.transition = 'opacity 0.2s ease';
 
-        // Lógica Hover
         headerEl.addEventListener('mouseenter', () => controlsEl.style.opacity = '1');
         headerEl.addEventListener('mouseleave', () => controlsEl.style.opacity = '0');
 
         // 📌 BOTÓN DE FIJAR (PIN)
-        const pinBtn = controlsEl.createEl('span', { attr: { title: isPinned ? "Unpin thread" : "Pin thread to top" }});
+        const pinBtn = controlsEl.createEl('span', { attr: { title: isPinned ? "Unpin" : "Pin to top" }});
         pinBtn.style.cursor = 'pointer';
         pinBtn.style.color = isPinned ? 'var(--interactive-accent)' : 'var(--text-muted)';
         setIcon(pinBtn, 'pin');
@@ -4430,10 +4929,10 @@ review_stage: 1
                 this.plugin.settings.pinnedThreads.push(node.fullPath);
             }
             await this.plugin.saveSettings();
-            this.applyFiltersAndRender(); // Recarga instantánea para que la caja vuele a su nueva posición
+            this.applyFiltersAndRender();
         };
 
-        // 🎨 1. BOTÓN DE COLOR (Sobrio y minimalista)
+        // 🎨 BOTÓN DE COLOR
         const colorBtn = controlsEl.createEl('span', { attr: { title: "Paint Box (Saves to Settings)" }});
         colorBtn.style.cursor = 'pointer';
         colorBtn.style.color = 'var(--text-muted)';
@@ -4449,21 +4948,18 @@ review_stage: 1
 
         colorInput.onchange = async (e: Event) => {
             const newColor = (e.target as HTMLInputElement).value;
-            
             if (!this.plugin.settings.structuralColors) this.plugin.settings.structuralColors = [];
             const existing = this.plugin.settings.structuralColors.find(c => c.tag === node.fullPath);
-            
             if (existing) {
                 existing.color = newColor;
             } else {
                 this.plugin.settings.structuralColors.push({ tag: node.fullPath, color: newColor });
             }
-            
             await this.plugin.saveSettings();
             this.applyFiltersAndRender();
         };
 
-        // ⏺︎ 2. BOTÓN DE EXPORTAR AL BOARD
+        // ⏺︎ BOTÓN DE EXPORTAR AL BOARD
         const exportBtn = controlsEl.createEl('span', { text: "⏺︎", attr: { title: "Export full tree to Board" }});
         exportBtn.style.cursor = 'pointer';
         exportBtn.style.color = 'var(--text-muted)';
@@ -4472,12 +4968,8 @@ review_stage: 1
 
         exportBtn.onclick = (e) => {
             e.stopPropagation(); 
-
-            // 🕸️ NUEVO MOTOR RECURSIVO PARA ATRAPAR HIJOS HACIA EL PINBOARD
             const pushItemAndChildrenToBoard = (marginalia: MarginaliaItem, indent: number, visitedIds: Set<string>) => {
-                // 🛡️ Evitar bucles infinitos (referencias circulares)
                 if (marginalia.blockId && visitedIds.has(marginalia.blockId)) return;
-                
                 const newVisited = new Set(visitedIds);
                 if (marginalia.blockId) newVisited.add(marginalia.blockId);
 
@@ -4486,75 +4978,53 @@ review_stage: 1
                 );
                 
                 if (!alreadyPinned) {
-                    // Clonamos el item para asignarle la sangría visual sin alterar la RAM original
                     this.pinboardItems.push({ ...marginalia, indentLevel: indent });
                 }
-
                 // 🕷️ Buscar y propagar a los hijos
-                if (marginalia.outgoingLinks && marginalia.outgoingLinks.length > 0) {
+                // 🛑 CORRECCIÓN: Solo atrapar a los hijos si estamos en el modo Hilos
+                if (this.currentTab === 'threads' && marginalia.outgoingLinks && marginalia.outgoingLinks.length > 0) {
                     for (const linkStr of marginalia.outgoingLinks) {
                         const parts = linkStr.split('#^');
                         if (parts.length === 2) {
-                            // 🛡️ Limpiamos por si el usuario le puso alias al enlace: [[nota#^id|alias]]
                             const childId = parts[1].split('|')[0].trim();
                             const childItem = this.cachedItems.find(i => i.blockId === childId);
-                            if (childItem) {
-                                pushItemAndChildrenToBoard(childItem, indent + 1, newVisited);
-                            }
+                            if (childItem) pushItemAndChildrenToBoard(childItem, indent + 1, newVisited);
                         }
                     }
                 }
             };
 
-            // 🧠 MOTOR PRINCIPAL DE INYECCIÓN DEL ÁRBOL
             const exportTreeToBoard = (currentNode: any, currentDepth: number) => {
                 const headingLevel = '#'.repeat(currentDepth + 1); 
                 const headingText = `${headingLevel} ${currentNode.name.toUpperCase()}`;
                 
                 this.pinboardItems.push({
-                    text: headingText,
-                    rawText: headingText,
-                    color: 'transparent',
-                    file: null as any,
-                    line: -1,
-                    blockId: null,
-                    outgoingLinks: [],
-                    isTitle: true 
+                    text: headingText, rawText: headingText, color: 'transparent',
+                    file: null as any, line: -1, blockId: null, outgoingLinks: [], isTitle: true 
                 });
 
-                // 🕸️ Llamamos al motor recursivo por cada nota raíz de esta caja
                 for (const item of currentNode.items) {
                     pushItemAndChildrenToBoard(item, 0, new Set<string>());
                 }
-
                 currentNode.children.forEach((child: any) => exportTreeToBoard(child, currentDepth + 1));
             };
 
             exportTreeToBoard(node, depth);
-            
-            // Forzar actualización visual si estamos mirando el Pinboard
             this.applyFiltersAndRender();
-            new Notice(`📦 Recuadro ${node.name.toUpperCase()} exportado al Board con todos sus hilos!`);
+            new Notice(`📦 ${node.name} exportado al Board con todos sus hilos!`);
         };
-        // ==========================================
 
-        // Contenedor interno (el que se va a ocultar/mostrar)
         const contentEl = groupEl.createDiv({ cls: 'cornell-thread-content' });
         contentEl.style.padding = '10px';
         contentEl.style.display = 'flex';
         contentEl.style.flexDirection = 'column';
         contentEl.style.gap = '4px';
-        // ==========================================
-        // 🎨 MOTOR DE COLOR ESTRUCTURAL (AISLADO)
-        // ==========================================
-        let matchedColor: string | null = null;
 
-        // 🧠 AHORA LEEMOS DE STRUCTURAL COLORS, NO DE TAGS
+        // 🎨 MOTOR DE COLOR ESTRUCTURAL
+        let matchedColor: string | null = null;
         if (this.plugin.settings?.structuralColors) {
             for (const structColor of this.plugin.settings.structuralColors) {
                 const settingTag = structColor.tag.trim();
-                
-                // Comparamos el tag estructural con la ruta de la caja
                 if (settingTag === node.fullPath || settingTag === node.name || settingTag === `#${node.name}`) {
                     matchedColor = structColor.color;
                     break; 
@@ -4570,86 +5040,109 @@ review_stage: 1
             iconSpan.style.color = matchedColor;
             toggleIcon.style.color = matchedColor;
         }
-        // ==========================================
-        // 🧠 LÓGICA DE COLAPSO (MEMORIA PERSISTENTE)
-        // ==========================================
-        
-        // 1. Consultamos la memoria (Settings) para ver si esta caja en específico fue cerrada antes
-        if (!this.plugin.settings.collapsedBoxes) this.plugin.settings.collapsedBoxes = [];
-        let isCollapsed = this.plugin.settings.collapsedBoxes.includes(node.fullPath);
 
-        // 2. Aplicamos el estado INICIAL instantáneamente (Renderizado pasivo)
+        // ==========================================
+        // 🧠 LÓGICA DE COLAPSO Y LAZY LOADING (Cero Lag)
+        // ==========================================
+        if (!this.plugin.settings.collapsedBoxes) this.plugin.settings.collapsedBoxes = [];
+        
+        let isCollapsed = isFolderMode ? true : false;
+        
+        if (this.plugin.settings.collapsedBoxes.includes(node.fullPath)) {
+            isCollapsed = !isCollapsed;
+        }
+
         contentEl.style.display = isCollapsed ? 'none' : 'flex';
         setIcon(toggleIcon, isCollapsed ? 'chevron-right' : 'chevron-down');
         headerEl.style.borderBottom = isCollapsed ? 'none' : '1px solid var(--background-modifier-border)';
 
-        // 3. El Motor de Eventos (Solo despierta y consume CPU cuando haces clic real)
+        let isRendered = false; 
+
+        const renderItemsLazy = () => {
+            if (isRendered) return;
+            
+            // 3. Dibujar las notas (Con inteligencia de pestañas)
+            for (const rootItem of node.items) {
+                
+                if (this.currentTab === 'threads') {
+                    // 🧵 MODO HILOS: Tarjetas envueltas, recursivas y arrastrables con todo su árbol
+                    const threadWrapper = contentEl.createDiv({ cls: 'cornell-draggable-thread' });
+                    threadWrapper.setAttr('draggable', 'true');
+                    threadWrapper.style.cursor = 'grab';
+                    threadWrapper.style.backgroundColor = 'var(--background-primary)';
+                    threadWrapper.style.border = '1px solid var(--background-modifier-border)';
+                    threadWrapper.style.borderRadius = '6px';
+                    threadWrapper.style.padding = '8px';
+                    threadWrapper.style.marginBottom = '10px'; 
+                    threadWrapper.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.05)';
+                    threadWrapper.style.transition = 'box-shadow 0.2s ease, opacity 0.2s';
+                    
+                    threadWrapper.addEventListener('dragstart', (e: DragEvent) => {
+                        if (!e.dataTransfer) return;
+                        e.stopPropagation(); // 🛑 Evita arrastrar la caja padre por accidente
+                        
+                        // A. Datos internos para el plugin (Fagocitación / Fusión)
+                        e.dataTransfer.setData('application/cornell-single-thread', JSON.stringify({
+                            filePath: rootItem.file.path,
+                            rawText: rootItem.rawText,
+                            currentTag: node.fullPath,
+                            line: rootItem.line
+                        }));
+
+                        // B. 📝 LA SOLUCIÓN UNTAGGED: Texto plano para Obsidian (Markdown/Canvas)
+                        // Al ser la pestaña Threads, SIEMPRE arrastramos con los hijos incluidos (true)
+                        const dragPayload = this.buildThreadDropText(rootItem, 0, new Set<string>(), undefined, true);
+                        e.dataTransfer.setData('text/plain', dragPayload.trim());
+                        CornellNotesView.lastDraggedPayload = dragPayload.trim(); //  EL HILO EN MEMORIA!
+                        
+                        e.dataTransfer.effectAllowed = 'copyMove';
+                        setTimeout(() => threadWrapper.style.opacity = '0.5', 0);
+                    });
+
+                    threadWrapper.addEventListener('dragend', (e: DragEvent) => {
+    e.stopPropagation();
+    threadWrapper.style.opacity = '1';
+    this.triggerTemplaterAfterDrop();
+
+    // ⚡ INVOCAMOS AL NUEVO MOTOR
+    
+});
+
+                    // Dibuja el hilo y sus descendientes visualmente
+                    this.renderThreadNode(rootItem, threadWrapper, this.cachedItems, new Set<string>(), isFilteredMode, true);
+                
+                } else {
+                    // 📁 MODO VAULT (CARPETAS): Marginalias individuales, planas y puras
+                    const marginaliaDOM = this.createItemDiv(rootItem, contentEl);
+                    marginaliaDOM.classList.add('cornell-sidebar-item');
+                    marginaliaDOM.tabIndex = 0;
+                }
+            }
+            isRendered = true;
+        };
+
+        if (!isCollapsed) renderItemsLazy();
+
         headerEl.onclick = async (e: MouseEvent) => {
             e.stopPropagation(); 
-            isCollapsed = !isCollapsed; // Invertimos el estado
+            isCollapsed = !isCollapsed; 
             
-            // Reacción visual inmediata (UX instantánea)
             contentEl.style.display = isCollapsed ? 'none' : 'flex';
             setIcon(toggleIcon, isCollapsed ? 'chevron-right' : 'chevron-down');
             headerEl.style.borderBottom = isCollapsed ? 'none' : '1px solid var(--background-modifier-border)';
 
-            // 💾 Operación de Memoria
-            if (isCollapsed) {
-                // Si la cerramos, la añadimos a la lista (evitando duplicados)
-                if (!this.plugin.settings.collapsedBoxes.includes(node.fullPath)) {
-                    this.plugin.settings.collapsedBoxes.push(node.fullPath);
-                }
-            } else {
-                // Si la abrimos, la borramos de la lista (limpieza de basura automática)
+            if (!isCollapsed) renderItemsLazy();
+
+            if (this.plugin.settings.collapsedBoxes.includes(node.fullPath)) {
                 this.plugin.settings.collapsedBoxes = this.plugin.settings.collapsedBoxes.filter(path => path !== node.fullPath);
+            } else {
+                this.plugin.settings.collapsedBoxes.push(node.fullPath);
             }
-            
-            // Guardamos en el disco.
             await this.plugin.saveSettings();
         };
+
         // ==========================================
-
-        // 3. Dibujar los hilos reales que pertenecen EXACTAMENTE a esta caja
-        for (const rootItem of node.items) {
-            // Envolvemos el hilo en un contenedor arrastrable
-            const threadWrapper = contentEl.createDiv({ cls: 'cornell-draggable-thread' });
-            threadWrapper.setAttr('draggable', 'true');
-            threadWrapper.style.cursor = 'grab';
-            
-            // 🎨 UXMejora: Diseño de "Tarjeta" para que no se peguen
-            threadWrapper.style.backgroundColor = 'var(--background-primary)';
-            threadWrapper.style.border = '1px solid var(--background-modifier-border)';
-            threadWrapper.style.borderRadius = '6px';
-            threadWrapper.style.padding = '8px';
-            threadWrapper.style.marginBottom = '10px'; // El oxígeno visual clave
-            threadWrapper.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.05)';
-            threadWrapper.style.transition = 'box-shadow 0.2s ease, opacity 0.2s';
-            
-            threadWrapper.addEventListener('dragstart', (e: DragEvent) => {
-                if (!e.dataTransfer) return;
-                e.stopPropagation(); // Evita arrastrar la caja padre por accidente
-                
-                // Empaquetamos el ADN de este hilo ÚNICO
-                e.dataTransfer.setData('application/cornell-single-thread', JSON.stringify({
-                    filePath: rootItem.file.path,
-                    rawText: rootItem.rawText,
-                    currentTag: node.fullPath, // Puede ser "#Untagged", "#padre", etc.
-                    line: rootItem.line
-                }));
-                e.dataTransfer.effectAllowed = 'move';
-                setTimeout(() => threadWrapper.style.opacity = '0.5', 0);
-            });
-
-            threadWrapper.addEventListener('dragend', (e: DragEvent) => {
-                e.stopPropagation();
-                threadWrapper.style.opacity = '1';
-            });
-
-            // Dibujamos el hilo real dentro de nuestro wrapper
-            this.renderThreadNode(rootItem, threadWrapper, this.cachedItems, new Set<string>(), isFilteredMode, true);
-        }
-        // ==========================================
-        // 🛸 PASO 2: MAGIA D&D (FAGOCITACIÓN)
+        // 🛸 MAGIA D&D (FAGOCITACIÓN)
         // ==========================================
         groupEl.setAttr('draggable', 'true');
         groupEl.style.cursor = 'grab';
@@ -4658,24 +5151,21 @@ review_stage: 1
             if (!e.dataTransfer) return;
             e.stopPropagation(); 
 
-            // 🛸 1. ADN PARA FAGOCITACIÓN INTERNA
             e.dataTransfer.setData('application/cornell-semantic-path', node.fullPath);
-            
-            // 🧠 LE DECIMOS AL SISTEMA SI ESTA CAJA ES MAYOR O SIMPLE
             const isMajor = node.children.size > 0 ? 'true' : 'false';
             e.dataTransfer.setData('application/cornell-is-major', isMajor);
 
-            // 📝 2. COMPILADOR MARKDOWN PARA ARRASTRAR A NOTAS
             let dropText = "";
-            const rootTitle = node.name.toUpperCase(); // 👈 RESCATAMOS ESTO
+            const rootTitle = node.name.toUpperCase(); 
 
             const buildDropText = (currentNode: any, currentDepth: number) => {
                 const headingLevel = '#'.repeat(currentDepth + 1); 
                 dropText += `${headingLevel} ${currentNode.name.toUpperCase()}\n\n`;
                 
+                const includeChildren = this.currentTab === 'threads'; // 🧠 INTELIGENCIA CONTEXTUAL
+
                 for (const item of currentNode.items) {
-                    // 🧵 USAMOS EL MOTOR RECURSIVO, PASANDO EL TÍTULO DEL RECUADRO
-                    dropText += this.buildThreadDropText(item, 0, new Set<string>(), rootTitle);
+                    dropText += this.buildThreadDropText(item, 0, new Set<string>(), rootTitle, includeChildren);
                 }
                 dropText += "\n";
                 currentNode.children.forEach((child: any) => buildDropText(child, currentDepth + 1));
@@ -4684,15 +5174,20 @@ review_stage: 1
             buildDropText(node, 0);
 
             e.dataTransfer.setData('text/plain', dropText.trim());
+            CornellNotesView.lastDraggedPayload = dropText.trim(); //  EL RECUADRO EN MEMORIA!
             e.dataTransfer.effectAllowed = 'copyMove';
             
             setTimeout(() => groupEl.style.opacity = '0.5', 0);
         });
 
         groupEl.addEventListener('dragend', (e: DragEvent) => {
-            e.stopPropagation();
-            groupEl.style.opacity = '1';
-        });
+    e.stopPropagation();
+    groupEl.style.opacity = '1';
+    this.triggerTemplaterAfterDrop();
+
+    // ⚡ INVOCAMOS AL NUEVO MOTOR
+    
+});
 
         groupEl.addEventListener('dragover', (e: DragEvent) => {
             e.preventDefault();
@@ -4713,7 +5208,12 @@ review_stage: 1
 
             const targetPath = node.fullPath; 
 
-            // 🎯 CASO A: ¿Soltaron un hilo individual?
+            // 🛡️ ESCUDO: Si es una caja de carpeta/archivo, abortamos la fusión
+            if (targetPath.startsWith('📁')) {
+                new Notice("⚠️ Cannot merge physical folders or files. Please use the Obsidian file explorer to move them.");
+                return;
+            }
+
             const singleThreadData = e.dataTransfer?.getData('application/cornell-single-thread');
             if (singleThreadData) {
                 const threadPayload = JSON.parse(singleThreadData);
@@ -4722,7 +5222,6 @@ review_stage: 1
                 return; 
             }
 
-            // 🧬 CASO B: ¿Soltaron una caja entera (Fagocitación o Súper-Recuadro)?
             const sourcePath = e.dataTransfer?.getData('application/cornell-semantic-path');
             if (sourcePath) {
                 if (sourcePath === targetPath || targetPath.startsWith(`${sourcePath}/`)) {
@@ -4730,23 +5229,19 @@ review_stage: 1
                     return;
                 }
 
-                // 🧠 LEYES DE LA GRAVEDAD ZETTELKASTEN
                 const isSourceMajor = e.dataTransfer?.getData('application/cornell-is-major') === 'true';
                 const isTargetMajor = node.children.size > 0;
 
-                // 1. Simple sobre Mayor = Fagocitación
                 if (!isSourceMajor && isTargetMajor) {
                     await this.executeFractalMerge(sourcePath, targetPath);
-                } 
-                // 2. Simple/Simple, Mayor/Mayor, Mayor/Simple = Fusión
-                else {
+                } else {
                     new ThreadMergeModal(this.plugin.app, sourcePath, targetPath, async (newParentName) => {
                         await this.executeGroupMerge(sourcePath, targetPath, newParentName);
                     }).open();
                 }
             }
         });
-        // 4. LA MAGIA RECURSIVA: Clasificar y dibujar hijos
+
         const pinnedChildren: SemanticTreeNode[] = [];
         const unpinnedChildren: SemanticTreeNode[] = [];
 
@@ -5244,6 +5739,7 @@ review_stage: 1
         itemDiv.createDiv({ cls: 'cornell-sidebar-item-meta', text: `${item.file.basename} (L${item.line + 1})` });
 
         itemDiv.onclick = async () => {
+            // 1. MODO STITCHING (Prioridad Absoluta)
             if (this.isStitchingMode) {
                 if (!this.sourceStitchItem) {
                     this.sourceStitchItem = item;
@@ -5261,6 +5757,47 @@ review_stage: 1
                 }
                 return;
             }
+
+            // 📖 2. NUEVO: MODO SALTO DIRECTO PDF SUPER-CAZADOR
+            if (this.isDirectPdfModeActive) {
+                const searchArea = `${item.context || ""} ${item.rawText || ""} ${item.text || ""}`;
+                
+                // 1. Cazador de Enlaces Obsidian (WikiLinks)
+                // Atrapa: [[Archivo.pdf#...|Alias]] o inclusos rotos como ![Archivo.pdf#...|Alias]]
+                const wikiRegex = /\[+([^\[\]]+\.pdf[^\]]*?)\]+/i;
+                
+                // 2. Cazador de Enlaces Markdown
+                // Atrapa: [Alias](Archivo.pdf#...)
+                const mdRegex = /\[.*?\]\((.*?\.pdf.*?)\)/i;
+                
+                // 3. Cazador de Emergencia (Texto plano)
+                const fallbackRegex = /([a-zA-Z0-9_ \-\.]+\.pdf(?:#[a-zA-Z0-9=&,\-\.]+)?)/i;
+
+                let pdfLink = "";
+                
+                const wikiMatch = searchArea.match(wikiRegex);
+                const mdMatch = searchArea.match(mdRegex);
+                const fallbackMatch = searchArea.match(fallbackRegex);
+
+                if (wikiMatch) {
+                    // Si encontró un [[Link]], le quitamos el alias (|Mi texto)
+                    pdfLink = wikiMatch[1].split('|')[0].trim();
+                } else if (mdMatch) {
+                    pdfLink = mdMatch[1].trim();
+                } else if (fallbackMatch) {
+                    pdfLink = fallbackMatch[1].trim();
+                }
+
+                if (pdfLink) {
+                    console.log("🔗 PDF++ Link capturado:", pdfLink); 
+                    await this.plugin.app.workspace.openLinkText(pdfLink, item.file.path, false);
+                    return; // 🛑 Cortamos aquí para que no abra el markdown
+                } else {
+                    new Notice("⚠️ No se encontró una cita a un PDF en esta marginalia.");
+                }
+            }
+
+            // 📝 3. COMPORTAMIENTO NORMAL: Abrir la nota markdown
             const leaf = this.plugin.app.workspace.getLeaf(false);
             await leaf.openFile(item.file, { eState: { line: item.line } });
         };
@@ -5289,32 +5826,57 @@ review_stage: 1
 
                 let startLine = item.line;
                 let endLine = item.line;
-                while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].startsWith('```')) startLine--;
-                while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].startsWith('```')) endLine++;
+                let textWithoutMarginalia = lines[item.line].replace(/%%[><](.*?)%%/g, '').trim();
+                textWithoutMarginalia = textWithoutMarginalia.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
 
+                let isTargetingCallout = false;
+
+                if (lines[item.line].trim().startsWith('>')) {
+                    isTargetingCallout = true;
+                } else if (textWithoutMarginalia === '') {
+                    let nextIdx = item.line + 1;
+                    while (nextIdx < lines.length && lines[nextIdx].trim() === '') nextIdx++;
+                    if (nextIdx < lines.length && lines[nextIdx].trim().startsWith('>')) {
+                        isTargetingCallout = true;
+                        startLine = nextIdx;
+                        endLine = nextIdx;
+                    }
+                }
+
+                if (isTargetingCallout) {
+                    while (startLine > 0 && lines[startLine - 1].trim().startsWith('>')) startLine--;
+                    while (endLine < lines.length - 1 && lines[endLine + 1].trim().startsWith('>')) endLine++;
+                } else {
+                    while (startLine > 0 && lines[startLine - 1].trim() !== '' && !lines[startLine - 1].trim().startsWith('>')) startLine--;
+                    while (endLine < lines.length - 1 && lines[endLine + 1].trim() !== '' && !lines[endLine + 1].trim().startsWith('>')) endLine++;
+                }
+                
                 removeTooltip(); 
 
-                // 🎯 ESCÁNER PDF++ BLINDADO (Quita el alias)
-                const pdfRegex = /!*\[\[(.*?\.(?:pdf).*?)\]\]/i;
-                const mdPdfRegex = /\[.*?\]\((.*?\.(?:pdf).*?)\)/i;
+                // 👁️ VISIÓN PANORÁMICA Y CAZADOR DE 3 NIVELES (PDF++)
+                const wikiRegex = /\[+([^\[\]]+\.pdf[^\]]*?)\]+/i;
+                const mdRegex = /\[.*?\]\((.*?\.pdf.*?)\)/i;
+                const fallbackRegex = /([a-zA-Z0-9_ \-\.]+\.pdf(?:#[a-zA-Z0-9=&,\-\.]+)?)/i;
+                
                 let pdfLinkText = null;
 
-                let match = lines[item.line].match(pdfRegex) || lines[item.line].match(mdPdfRegex);
-                if (match) pdfLinkText = match[1];
-                if (!pdfLinkText && item.line - 1 >= startLine) {
-                    match = lines[item.line - 1].match(pdfRegex) || lines[item.line - 1].match(mdPdfRegex);
-                    if (match) pdfLinkText = match[1];
-                }
-                if (!pdfLinkText && item.line + 1 <= endLine) {
-                    match = lines[item.line + 1].match(pdfRegex) || lines[item.line + 1].match(mdPdfRegex);
-                    if (match) pdfLinkText = match[1];
+                for (let j = startLine; j <= endLine; j++) {
+                    const lineStr = lines[j];
+                    const wikiMatch = lineStr.match(wikiRegex);
+                    const mdMatch = lineStr.match(mdRegex);
+                    const fallbackMatch = lineStr.match(fallbackRegex);
+
+                    if (wikiMatch) pdfLinkText = wikiMatch[1].split('|')[0].trim();
+                    else if (mdMatch) pdfLinkText = mdMatch[1].trim();
+                    else if (fallbackMatch) pdfLinkText = fallbackMatch[1].trim();
+
+                    if (pdfLinkText) break;
                 }
 
                 if (pdfLinkText) {
-                    const cleanLinkText = pdfLinkText.split('|')[0].trim(); // 🛡️ CRÍTICO: Quitar alias
                     this.plugin.app.workspace.trigger("hover-link", {
                         event: e, source: "preview", hoverParent: itemDiv,
-                        targetEl: itemDiv, linktext: cleanLinkText, sourcePath: item.file.path
+                        targetEl: itemDiv, linktext: pdfLinkText, sourcePath: item.file.path
                     });
                     return;
                 }
@@ -5352,8 +5914,14 @@ review_stage: 1
                 tooltipEl.appendChild(styleTag);
                 
                 const header = tooltipEl.createDiv({ cls: 'cornell-hover-context' });
-                header.innerHTML = `<span style="font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;">📄 ${item.file.basename} (L${item.line + 1})</span>`;
-                
+                // 🛡️ CÓDIGO SEGURO (Uso de createEl)
+const headerText = `📄 ${item.file.basename} (L${item.line + 1})`;
+header.createEl('span', {
+    text: headerText, // Text escapa automáticamente cualquier tag HTML
+    attr: { 
+        style: "font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;" 
+    }
+});
                 const body = tooltipEl.createDiv();
                 body.style.width = '100%'; 
                 document.body.appendChild(tooltipEl);
@@ -5394,10 +5962,11 @@ review_stage: 1
         if (!isPinboardView) {
             itemDiv.setAttr('draggable', 'true');
             itemDiv.addEventListener('dragstart', (event: DragEvent) => {
+                // 🛑 LA MAGIA: Detiene el "burbujeo". Evita que al arrastrar la nota, se arrastre la carpeta padre.
+                event.stopPropagation();
                 
                 // 🧹 ELIMINAMOS EL TOOLTIP NATIVO AL ARRASTRAR LA NOTA
                 document.querySelectorAll('.hover-popover').forEach(el => el.remove());
-                
                 if (!event.dataTransfer) return;
                 event.dataTransfer.effectAllowed = 'copy'; 
                 
@@ -5408,19 +5977,47 @@ review_stage: 1
                     this.injectBackgroundBlockId(item.file, item.line, targetId);
                 }
 
-                // 📝 MOTOR RECURSIVO PARA ARRASTRE INDIVIDUAL 
-            // 🧠 Lógica Inteligente: Solo arrastra los hilos (hijos) si estamos en la pestaña 'threads'
-            const shouldIncludeChildren = this.currentTab === 'threads';
-            let dragPayload = this.buildThreadDropText(item, 0, new Set<string>(), undefined, shouldIncludeChildren);
+                // 🚀 EXCALIDRAW SPLIT-MODE (Activado con CTRL / CMD)
+                if (event.ctrlKey || event.metaKey) {
+                    let cleanText = this.cleanExportText(item.text);
+                    if (!cleanText) cleanText = item.text.replace(/!\[\[(.*?)\]\]/g, '🖼️ [Image]').trim() || "Marginalia Doodle";
+                    
+                    let citationText = item.context || "";
+                    
+                    // 🧽 SANITIZADOR MULTILÍNEA: Aplasta saltos de línea para que Excalidraw no se rompa con PDF++
+                    cleanText = cleanText.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
+                    citationText = citationText.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
-            event.dataTransfer.setData('text/plain', dragPayload.trim());
-            this.draggedSidebarItems = [item];
+                    // 1. El Ratón lleva SOLO el texto (La Marginalia) al lienzo
+                    event.dataTransfer.setData('text/plain', cleanText);
+                    CornellNotesView.lastDraggedPayload = cleanText; // 👈 GUARDAMOS EN MEMORIA
+                    
+                    // 2. El Portapapeles se traga la Cita (PDF++)
+                    if (citationText) {
+                        navigator.clipboard.writeText(citationText);
+                        new Notice("🎨 Excalidraw: Marginalia soltada. ¡Presiona Ctrl+V para pegar el PDF++!");
+                    } else {
+                        new Notice("🎨 Excalidraw: Marginalia soltada en el lienzo.");
+                    }
+                } else {
+                    // 📝 MODO NORMAL (Mantiene los hijos si existieran en la rama)
+                    const shouldIncludeChildren = this.currentTab === 'threads';
+                    let dragPayload = this.buildThreadDropText(item, 0, new Set<string>(), undefined, shouldIncludeChildren);
+                    event.dataTransfer.setData('text/plain', dragPayload.trim());
+                    CornellNotesView.lastDraggedPayload = dragPayload.trim(); // 👈 GUARDAMOS EN MEMORIA
+                }
+
+                this.draggedSidebarItems = [item]; 
             });
 
             itemDiv.addEventListener('dragend', () => {
                 this.draggedSidebarItems = null; 
                 itemDiv.removeClass('cornell-drop-target');
-            });
+                this.triggerTemplaterAfterDrop();
+
+                // ⚡ INVOCAMOS AL NUEVO MOTOR
+    
+});
 
             itemDiv.addEventListener('dragenter', (e: DragEvent) => {
                 e.preventDefault(); 
@@ -5769,7 +6366,62 @@ async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
             return lines.join('\n');
         });
     }
-    
+ // 🧠 MOTOR DE SINCRONIZACIÓN TEMPLATER (Quirúrgico y Seguro para Undo)
+    async triggerTemplaterAfterDrop() {
+        const payload = CornellNotesView.lastDraggedPayload;
+        if (!payload || !payload.includes('<%')) return; // Solo actuamos si hay código Templater
+
+        const templaterPlugin = (this.plugin.app as any).plugins.plugins["templater-obsidian"];
+        if (!templaterPlugin || !templaterPlugin.templater) return;
+
+        const activeView = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!activeView || !activeView.file || !activeView.editor) return;
+
+        const editor = activeView.editor;
+
+        // Le damos 50ms a Obsidian para que termine de inyectar el texto del Drop nativo
+        setTimeout(async () => {
+            try {
+                const content = editor.getValue();
+                const cursor = editor.getCursor();
+                
+                // Calculamos si el texto cayó exactamente donde está el cursor ahora
+                const endOffset = editor.posToOffset(cursor);
+                const startOffset = endOffset - payload.length;
+                
+                // 1. Buscamos exactamente dónde cayó el texto
+                let targetStartOffset = -1;
+                if (startOffset >= 0 && content.substring(startOffset, endOffset) === payload) {
+                    targetStartOffset = startOffset; // El cursor nos dice la posición exacta
+                } else {
+                    targetStartOffset = content.lastIndexOf(payload); // Fallback: buscamos la última vez que apareció ese texto
+                }
+
+                if (targetStartOffset === -1) return; // No se encontró el texto, abortar
+
+                // 2. Le pedimos a Templater que parsee SOLO ese pedacito de texto en memoria
+                const parsedPayload = await templaterPlugin.templater.parse_template(
+                    { target_file: activeView.file, run_mode: 4 }, // 4 = API Interna
+                    payload
+                );
+
+                if (parsedPayload === payload) return; // Templater no hizo cambios
+
+                // 3. Reemplazamos QUIRÚRGICAMENTE solo el rango del Drop
+                // ESTO ES LO QUE MANTIENE VIVO EL CTRL+Z Y ELIMINA EL EFECTO FANTASMA
+                const startPos = editor.offsetToPos(targetStartOffset);
+                const endPos = editor.offsetToPos(targetStartOffset + payload.length);
+
+                editor.replaceRange(parsedPayload, startPos, endPos);
+                
+                // Limpiamos la memoria para el próximo drag
+                CornellNotesView.lastDraggedPayload = "";
+
+            } catch (err) {
+                console.warn("Cornell Marginalia: Fallo al procesar Templater tras Drag & Drop", err);
+            }
+        }, 50);
+    }   
 
     // Se ejecuta cuando cierras la barra lateral
     async onClose() {
@@ -6068,6 +6720,17 @@ export class CornellSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 })
             ); 
+        // 👇 NUEVO AJUSTE PARA EL TEMPLATE DEL OMNI-CAPTURE
+        new Setting(containerEl)
+            .setName("Omni-Capture Template")
+            .setDesc("Define the output format for your captures. Use {{text}}, {{citation}}, and {{image}}. Supports Templater (<% %>). If you want to use Flashcard mode, remember to include ';;' inside your text template.")
+            .addTextArea(text => text
+                .setPlaceholder("\\n%%> {{text}} %%\\n{{citation}}\\n{{image}}\\n\\n---")
+                .setValue(this.plugin.settings.omniCaptureTemplate)
+                .onChange(async (value) => {
+                    this.plugin.settings.omniCaptureTemplate = value;
+                    await this.plugin.saveSettings();
+                }));
 
         new Setting(containerEl)
             .setName('Zettelkasten Folder')
@@ -6568,12 +7231,13 @@ export class CornellSettingTab extends PluginSettingTab {
                 saveBtn.onclick = async () => {
                     let newTag = tagInput.value.trim();
                     if (!newTag.startsWith('#')) newTag = '#' + newTag; 
-                    const newDeck = deckInput.value.trim();
                     
-                    // Si cambió el nombre de la etiqueta, borramos la vieja
+                    // 🛡️ SANITIZAMOS EL NOMBRE DEL MAZO ANTES DE GUARDAR EN SETTINGS
+                    const safeDeck = sanitizeAnkiDeckName(deckInput.value);
+                    
                     if (newTag !== tag) delete this.plugin.settings.ankiTagToDeck[tag];
                     
-                    this.plugin.settings.ankiTagToDeck[newTag] = newDeck;
+                    this.plugin.settings.ankiTagToDeck[newTag] = safeDeck;
                     await this.plugin.saveSettings();
                     new Notice('✅ Mapping saved');
                     this.display();
@@ -7412,7 +8076,10 @@ export class RhizomeView extends ItemView {
                         tooltipEl.appendChild(styleTag);
                         
                         const header = tooltipEl.createDiv({ cls: 'cornell-hover-context' });
-                        header.innerHTML = `<span style="font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;">📄 ${item.file.basename} (L${item.line + 1})</span>`;
+                        const headerSpan = header.createEl("span", {
+    text: `📄 ${item.file.basename} (L${item.line + 1})`,
+    attr: { style: "font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;" }
+});
                         
                         const body = tooltipEl.createDiv();
                         body.style.width = '100%'; 
@@ -8063,8 +8730,10 @@ export class RhizomeView extends ItemView {
                     tooltipEl.appendChild(styleTag);
 
                     const header = tooltipEl.createDiv({ cls: 'cornell-hover-context' });
-                    header.innerHTML = `<span style="font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;">📄 ${item.file.basename} (L${item.line + 1})</span>`;
-
+                    const headerSpan = header.createEl("span", {
+    text: `📄 ${item.file.basename} (L${item.line + 1})`,
+    attr: { style: "font-size: 1.1em; color: var(--text-normal); font-weight: bold; display: block; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; width: 100%;" }
+});
                     const body = tooltipEl.createDiv();
                     body.style.width = '100%';
                     document.body.appendChild(tooltipEl);
@@ -8650,30 +9319,55 @@ export default class CornellMarginalia extends Plugin {
             new Notice(`❌ Could not connect to TaskNotes on port ${port}. Is the plugin running?`);
         }
     }
-// 📄 MOTOR DE PLANTILLAS
-    async getTemplateContent(templatePath: string, variables: Record<string, string>): Promise<string> {
-        if (!templatePath || templatePath.trim() === "") return "";
+// 📄 MOTOR DE PLANTILLAS AVANZADO (Con soporte para Templater)
+async getTemplateContent(templatePath: string, variables: Record<string, string>, targetFile?: TFile): Promise<string> {
+    if (!templatePath || templatePath.trim() === "") return "";
+    
+    // Obtenemos el archivo de la bóveda usando la ruta
+    const file = this.app.metadataCache.getFirstLinkpathDest(templatePath, "");
+    
+    if (file instanceof TFile) {
+        let content = await this.app.vault.read(file);
         
-        // Obtenemos el archivo de la bóveda usando la ruta
-        const file = this.app.metadataCache.getFirstLinkpathDest(templatePath, "");
-        if (file instanceof TFile) {
-            let content = await this.app.vault.read(file);
-            
-            // Reemplazamos las variables dinámicas
-            for (const [key, value] of Object.entries(variables)) {
-                // Usamos Regex con bandera 'g' para reemplazar TODAS las ocurrencias
-                const regex = new RegExp(`{{${key}}}`, 'g');
-                content = content.replace(regex, value);
+        // 1. Reemplazamos tus variables dinámicas nativas ({{text}}, {{source_note}}, etc.)
+        for (const [key, value] of Object.entries(variables)) {
+            const regex = new RegExp(`{{${key}}}`, 'g');
+            content = content.replace(regex, value);
+        }
+
+        // 2. ⚡ Integración con Templater (Hooks de la API no oficial)
+        // Accedemos a la instancia de Templater de forma segura
+        const templaterPlugin = (this.app as any).plugins.plugins["templater-obsidian"];
+        
+        if (templaterPlugin && templaterPlugin.templater) {
+            try {
+                // Templater necesita un contexto (un archivo) para resolver variables como <% tp.file.title %>
+                // Usamos el targetFile si se proporciona, o el archivo activo como fallback
+                const activeContextFile = targetFile || this.app.workspace.getActiveFile();
+                
+                if (activeContextFile) {
+                    // Llamamos al motor de Templater para parsear el string en memoria
+                    content = await templaterPlugin.templater.parse_template(
+                        { target_file: activeContextFile, run_mode: 4 }, // run_mode 4 es para llamadas de API internas
+                        content
+                    );
+                }
+            } catch (error) {
+                console.warn("Cornell Marginalia: Error al parsear con Templater. Verifique la sintaxis de sus tags <% %>.", error);
+                // Si Templater falla, devolvemos el contenido con tus variables nativas resueltas
             }
-            return content + "\n"; // Aseguramos un salto de línea al final
         }
         
-        new Notice(`⚠️ Template not found: ${templatePath}`);
-        return "";
+        return content + "\n"; // Aseguramos un salto de línea al final
     }
+    
+    new Notice(`⚠️ Template not found: ${templatePath}`);
+    return "";
+}
     async onload() {
         await this.loadSettings();
         this.captureManager = new OmniCaptureManager(this.app, this);
+        
 
         // 👇 INICIALIZAMOS Y CONECTAMOS LOS ADDONS
         this.gamificationAddon = new GamificationAddon(this);
@@ -8739,10 +9433,32 @@ export default class CornellMarginalia extends Plugin {
     
 }
         // 👆 FIN DE LA CONEXIÓN DE ADDONS
-        
+       
 
         this.updateStyles(); 
         this.registerView(CORNELL_VIEW_TYPE, (leaf) => new CornellNotesView(leaf, this));
+
+        // 🧠 MOTOR DE DRAG & DROP PARA TEMPLATER (CodeMirror 6 Nativo)
+        this.registerEditorExtension(EditorView.domEventHandlers({
+            drop: (event: DragEvent, view: EditorView) => {
+                // 1. Leemos el texto que estás arrastrando
+                const text = event.dataTransfer?.getData('text/plain');
+                
+                // 2. Si el texto tiene tags de Templater (<%...%>) intervenimos
+                if (text && text.includes('<%') && text.includes('%>')) {
+                    event.preventDefault(); // 🛑 Bloqueamos la caída nativa (Adiós efecto fantasma)
+
+                    // 3. Calculamos la posición exacta del mouse en el texto
+                    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+                    if (pos === null) return false;
+
+                    // 4. Mandamos procesar e inyectar
+                    this.processTemplaterDrop(text, pos, view);
+                    return true; // Le decimos a Obsidian: "Yo me encargo"
+                }
+                return false; // Si no hay Templater, que caiga normal
+            }
+        }));
 
         this.addCommand({
             id: 'open-cornell-explorer',
@@ -9384,10 +10100,21 @@ this.registerEvent(
         });     
         this.registerMarkdownPostProcessor((el, ctx) => {
             if (!this.settings.enableReadingView) return;
+
+            
             
             // 🛡️ ESCUDO ANTI-DIPLOPIA (Parte 1): Ignoramos contenedores de código ya procesados
             if (el.classList.contains("block-language-cornell") || el.querySelector(".cornell-editorial-wrapper")) {
                 return;
+            }
+
+            // 🪄 NUEVO: ENVOLTORIO QUIRÚRGICO PARA "ESTO YA NO" (Modo Lectura)
+            // Aísla la línea exacta de la flashcard separada por <br> y le aplica la clase de Blur
+            const isolateRegex = /(^|<br>)((?:(?!<br>).)*?%%[><][\s\S]*?;;[\s\S]*?%%(?:(?!<br>).)*)/g;
+            if (isolateRegex.test(el.innerHTML)) {
+                el.innerHTML = el.innerHTML.replace(isolateRegex, (match, br, content) => {
+                    return `${br}<span class="cornell-reading-flashcard-target" style="display:block; width:100%;">${content}</span>`;
+                });
             }
 
             // Inyectar Visual Helper en el DOM de Modo Lectura y ocultar la sintaxis %%
@@ -9450,10 +10177,7 @@ this.registerEvent(
                     let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
                     const isFlashcard = tempNoteContent.includes(";;");
 
-                    if (isFlashcard) {
-                        tempNoteContent = tempNoteContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
-                    }
-
+                   // 1. EXTRACTOR DE COLOR, IMÁGENES Y LINKS
                     let matchedColor = null;
                     let finalNoteText = tempNoteContent;
 
@@ -9480,21 +10204,55 @@ this.registerEvent(
                     linkMatches.forEach(m => threadLinks.push(m[1]));
                     finalRenderText = finalRenderText.replace(linkRegex, '').trim();
 
+                    // 2. CREACIÓN DEL CONTENEDOR (UNA ÚNICA VEZ)
                     const marginDiv = document.createElement("div");
                     marginDiv.className = "cm-cornell-margin reading-mode-margin"; 
 
-                    // 👇 CLASIFICADOR INTELIGENTE PARA READING VIEW
-if (isFlashcard) {
-    marginDiv.classList.add("is-flashcard");
-} else {
-    marginDiv.classList.add("is-explanatory");
-}
+                    // 👇 3. CLASIFICADOR INTELIGENTE PARA READING VIEW (DOM HTML)
+                    if (isFlashcard) {
+                        marginDiv.classList.add("is-flashcard");
+                        
+                        let textWithoutMarginalia = line.replace(/%%[><](.*?)%%/g, '').replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
+                        const isCalloutLine = textWithoutMarginalia.startsWith('>');
+                        let cleanTextForStandalone = textWithoutMarginalia;
+                        if (isCalloutLine) cleanTextForStandalone = cleanTextForStandalone.replace(/^>\s*/, '').trim();
+                        
+                        const isStandalone = cleanTextForStandalone === '';
+                        let targetToBlur = null; // 👈 Empezamos en null para no difuminar el <p> entero por error
+
+                        if (!isStandalone) {
+                            // 🧠 REGLA 1: INLINE 
+                            if (isCalloutLine) {
+                                // Si es un callout, difuminamos el callout entero
+                                const calloutParent = currentTarget.closest('.callout');
+                                if (calloutParent) targetToBlur = calloutParent as HTMLElement;
+                            } 
+                            // Si es prosa normal, YA FUE ENVUELTA por nuestro Regex superior.
+                            // Dejamos targetToBlur en null para que "esto ya no" quede a salvo.
+                        } else {
+                            // 🧠 REGLA 2: STANDALONE
+                            let nextEl = currentTarget.nextElementSibling;
+                            if (!nextEl && currentTarget.parentElement) {
+                                nextEl = currentTarget.parentElement.nextElementSibling;
+                            }
+                            if (nextEl) targetToBlur = nextEl as HTMLElement;
+                        }
+
+                        // 🛡️ CRÍTICO: Usamos TU clase original para que el CSS la detecte
+                        if (targetToBlur) {
+                            targetToBlur.classList.add("cornell-flashcard-target");
+                        }
+                    } else {
+                        marginDiv.classList.add("is-explanatory");
+                    }
                     
+                    // 4. APLICAMOS EL COLOR
                     if (matchedColor) {
                         marginDiv.style.setProperty('border-color', matchedColor, 'important');
                         marginDiv.style.setProperty('color', matchedColor, 'important');
                     }
 
+                    // 5. RENDERIZAMOS EL MARKDOWN EN EL CONTENEDOR
                     MarkdownRenderer.render(this.app, finalRenderText, marginDiv, ctx.sourcePath, this);
 
                     if (imagesToRender.length > 0) {
@@ -9568,6 +10326,22 @@ if (isFlashcard) {
 
                     if (isFlashcard) {
                         currentTarget.classList.add('cornell-flashcard-target');
+                        
+                        // 🚀 MUTACIÓN DEL DOM: Si la marginalia está arriba, buscamos el Callout debajo y lo difuminamos
+                        let tempTextForCallout = line.replace(/%%[><](.*?)%%/g, '').replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
+                        if (tempTextForCallout === '') {
+                            setTimeout(() => {
+                                let nextEl = currentTarget.nextElementSibling;
+                                if (nextEl && (nextEl.classList.contains('callout') || nextEl.querySelector('.callout'))) {
+                                    nextEl.classList.add('cornell-flashcard-target');
+                                } else if (!nextEl && currentTarget.parentElement) {
+                                    let parentNext = currentTarget.parentElement.nextElementSibling;
+                                    if (parentNext && (parentNext.classList.contains('callout') || parentNext.querySelector('.callout'))) {
+                                        parentNext.classList.add('cornell-flashcard-target');
+                                    }
+                                }
+                            }, 50);
+                        }
                     }
                     
                     setTimeout(() => {
@@ -9586,7 +10360,41 @@ if (isFlashcard) {
             });
         });
     }
-    
+    // 🧠 PROCESADOR DE TEMPLATER EN RAM
+async processTemplaterDrop(text: string, pos: number, view: EditorView) {
+        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        
+        // 🛡️ ESCUDO: Sanitizamos el texto que viene de afuera
+        let safeText = sanitizeForTemplater(text); 
+        let finalContent = safeText;
+
+        if (activeView && activeView.file) {
+            const templaterPlugin = (this.app as any).plugins.plugins["templater-obsidian"];
+            if (templaterPlugin && templaterPlugin.templater) {
+                try {
+                    // Ahora es seguro parsearlo
+                    finalContent = await templaterPlugin.templater.parse_template(
+                        { target_file: activeView.file, run_mode: 4 }, 
+                        safeText 
+                    );
+                } catch (err) {
+                    console.warn("Cornell Marginalia: Fallo al compilar Templater", err);
+                }
+            }
+        }
+        // ... resto del código ...
+
+        // 2. Inyectamos el resultado limpio en CodeMirror (Mantiene vivo Ctrl+Z)
+        view.dispatch({
+            changes: { from: pos, insert: finalContent }
+        });
+        
+        // 3. Movemos el cursor al final de la nota que acabas de soltar
+        view.dispatch({
+            selection: { anchor: pos + finalContent.length }
+        });
+        view.focus();
+    }
     onunload() {
         console.log("Descargando Cornell Marginalia...");
         

@@ -184,42 +184,83 @@ body[style*="--cornell-float: right"] .reading-mode-margin.cornell-reverse-align
     border-left: none !important;
 }
 
-/* --- MODO ACTIVO (BLUR) DEFINITIVO V2 (SALVANDO LA MARGINALIA) --- */
+/* ======================================================
+   🧠 MODO ACTIVO (BLUR) PARA NOTAS MARKDOWN
+   ====================================================== */
 
-/* 1. Atacamos al texto base y a todos sus hijos EXCEPTO la marginalia y su contenido */
+/* 1. Difuminar el texto y los widgets */
 body.cornell-active-recall-on .cornell-flashcard-target,
-body.cornell-active-recall-on .cornell-flashcard-target *:not(.cm-cornell-margin):not(.cm-cornell-margin *) {
+body.cornell-active-recall-on .cornell-flashcard-target *:not(.cm-cornell-margin):not(.cm-cornell-margin *),
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block *:not(.cm-cornell-margin):not(.cm-cornell-margin *),
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout *:not(.cm-cornell-margin):not(.cm-cornell-margin *) {
     color: transparent !important;
     text-shadow: 0 0 12px var(--text-normal) !important;
     cursor: help;
-    transition: color 0.3s ease, text-shadow 0.3s ease;
+    transition: color 0.2s ease, text-shadow 0.2s ease;
 }
 
-/* 2. Escudo absoluto para la Marginalia (Quitamos la regla de color para que no herede la transparencia) */
+/* 2. Proteger la Marginalia */
 body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin,
-body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin * {
+body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin *,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .cm-cornell-margin,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .cm-cornell-margin * {
     text-shadow: none !important;
     filter: none !important;
     opacity: 1 !important;
 }
 
-/* 3. Parche LaTeX e Imágenes (Excluimos las imágenes que estén DENTRO de la marginalia por si acaso) */
+/* 3. Difuminar Multimedia */
 body.cornell-active-recall-on .cornell-flashcard-target mjx-container,
-body.cornell-active-recall-on .cornell-flashcard-target img:not(.cm-cornell-margin img) {
+body.cornell-active-recall-on .cornell-flashcard-target img:not(.cm-cornell-margin img),
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block mjx-container,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block img:not(.cm-cornell-margin img),
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout img {
     filter: blur(8px) opacity(0.6) !important;
-    transition: filter 0.3s ease, opacity 0.3s ease !important;
+    transition: filter 0.2s ease, opacity 0.2s ease !important;
 }
 
-/* 4. Hover Reveal: Recuperamos la visión al pasar el mouse */
+/* 4. Cinta Censuradora en Markdown (PDF++ Embeds) */
+body.cornell-active-recall-on .cornell-flashcard-target .pdf-plus-backlink,
+body.cornell-active-recall-on .cornell-flashcard-target .rect-highlight,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .pdf-plus-backlink,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .rect-highlight {
+    opacity: 1 !important; 
+    filter: brightness(0.2) contrast(200%) !important; 
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+    pointer-events: auto !important; 
+    transition: all 0.2s ease !important;
+}
+
+/* 👁️ HOVER EN MARKDOWN */
 body.cornell-active-recall-on .cornell-flashcard-target:hover,
-body.cornell-active-recall-on .cornell-flashcard-target:hover *:not(.cm-cornell-margin):not(.cm-cornell-margin *) {
+body.cornell-active-recall-on .cornell-flashcard-target:hover *:not(.cm-cornell-margin):not(.cm-cornell-margin *),
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block:hover,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block:hover *:not(.cm-cornell-margin):not(.cm-cornell-margin *),
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout:hover,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout:hover *:not(.cm-cornell-margin):not(.cm-cornell-margin *) {
     color: var(--text-normal) !important;
     text-shadow: none !important;
 }
 
-body.cornell-active-recall-on .cornell-flashcard-target:hover mjx-container,
-body.cornell-active-recall-on .cornell-flashcard-target:hover img:not(.cm-cornell-margin img) {
+body.cornell-active-recall-on .cornell-flashcard-target mjx-container:hover,
+body.cornell-active-recall-on .cornell-flashcard-target img:not(.cm-cornell-margin img):hover,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block mjx-container:hover,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block img:not(.cm-cornell-margin img):hover,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout img:hover {
     filter: blur(0px) opacity(1) !important;
+}
+
+body.cornell-active-recall-on .cornell-flashcard-target .pdf-plus-backlink:hover,
+body.cornell-active-recall-on .cornell-flashcard-target .rect-highlight:hover,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .pdf-plus-backlink:hover,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .rect-highlight:hover {
+    filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    opacity: 0.3 !important; 
 }
 
 
@@ -258,7 +299,6 @@ body.cornell-active-recall-on .cornell-flashcard-target:hover img:not(.cm-cornel
     font-style: italic;
     margin-top: 20px;
 }
-
 
 
 /* ======================================================
@@ -996,38 +1036,54 @@ input.cornell-search-bar:focus {
 }
 
 /* ======================================================
-   🖼️ CUSTOM BACKGROUND ADDON STYLES
+   🖼️ CUSTOM BACKGROUND ADDON STYLES (VERSIÓN DEFINITIVA OBSIDIAN)
    ====================================================== */
+
+/* 1. Limpiamos tu contenedor para que fluya con naturalidad */
 .cornell-sidebar-container {
-    position: relative; /* Necesario para contener el fondo */
-    overflow: hidden; /* Evita que el blur ensucie fuera de la barra */
-    z-index: 1;
+    padding: 10px;
+    position: relative;
+    z-index: 2; /* Asegura que tus tarjetas queden por encima del fondo */
 }
 
-/* El pseudo-elemento que dibuja el fondo con blur */
-.cornell-sidebar-container::before {
+/* 2. EL HACK: Anclamos el fondo al panel maestro de Obsidian (Que NO hace scroll) */
+.workspace-leaf-content:has(.cornell-sidebar-container) {
+    position: relative;
+    overflow: hidden !important; /* Escudo: Evita que el blur se salga a otros paneles */
+    background-color: var(--background-primary) !important;
+}
+
+/* 3. La imagen y el Blur se inyectan en el panel maestro (inmóvil) */
+.workspace-leaf-content:has(.cornell-sidebar-container)::before {
     content: "";
     position: absolute;
-    top: -20px; left: -20px; right: -20px; bottom: -20px; /* Expandido para ocultar los bordes feos del blur */
+    top: -20px; left: -20px; right: -20px; bottom: -20px; 
     background-image: var(--cornell-sidebar-bg, none);
     background-size: cover;
     background-position: center;
     filter: blur(var(--cornell-sidebar-blur, 0px));
-    z-index: -2;
+    z-index: 0;
     pointer-events: none;
     transition: filter 0.3s ease;
 }
 
-/* El oscurecedor (Overlay) para que el texto siga siendo legible */
-.cornell-sidebar-container::after {
+/* 4. El Oscurecedor inyectado en el panel maestro */
+.workspace-leaf-content:has(.cornell-sidebar-container)::after {
     content: "";
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
     background-color: var(--background-primary);
     opacity: var(--cornell-sidebar-opacity, 0);
-    z-index: -1;
+    z-index: 1;
     pointer-events: none;
     transition: opacity 0.3s ease;
+}
+
+/* 5. Volvemos transparente la caja de scroll de Obsidian para ver el fondo */
+.workspace-leaf-content:has(.cornell-sidebar-container) .view-content {
+    background-color: transparent !important;
+    position: relative;
+    z-index: 2; /* El texto y tus funciones de Drag & Drop siguen intactas */
 }
 
 /* --- ACTUALIZACIONES DEL PERFIL --- */
@@ -1742,6 +1798,8 @@ body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target
 body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target .is-explanatory:hover img {
     filter: blur(0px) opacity(1) !important;
 }
+
+
 /* ======================================================
    🚀 CORNELL ULTIMATE DASHBOARD (V2 - Layout)
    ====================================================== */
@@ -2376,4 +2434,33 @@ body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target
 .collection-box.drag-over {
     border-color: var(--color-green); /* O el color de éxito que uses en Obsidian */
     background-color: rgba(var(--color-green-rgb), 0.1);
+}
+/* ======================================================
+   🧠 MODO ACTIVE RECALL PARA EL VISOR DE PDF
+   ====================================================== */
+
+/* 1. La Cinta Censuradora Base */
+body.cornell-pdf-active-recall .pdf-plus-backlink,
+body.cornell-pdf-active-recall .rect-highlight,
+body.cornell-pdf-active-recall .pdf-highlight,
+body.cornell-pdf-active-recall .textLayer .highlight {
+    opacity: 1 !important; 
+    filter: brightness(0.2) contrast(200%) !important; 
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+    transition: all 0.15s ease !important;
+    cursor: help !important;
+    border-radius: 4px !important;
+    pointer-events: auto !important; 
+}
+
+/* 2. La Revelación Controlada por JS */
+body.cornell-pdf-active-recall .cornell-reveal-sync,
+body.cornell-pdf-active-recall .cornell-reveal-sync .rect-highlight,
+body.cornell-pdf-active-recall .cornell-reveal-sync .pdf-highlight,
+body.cornell-pdf-active-recall .cornell-reveal-sync .highlight {
+    filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    opacity: 0.3 !important; 
 }

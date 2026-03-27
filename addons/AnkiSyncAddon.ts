@@ -1,6 +1,9 @@
 import { App, Notice, Modal, TFile, getAllTags } from "obsidian";
 import { CornellAddon } from "./CornellAddon";
 import type CornellMarginalia from "../main";
+import { sanitizeAnkiDeckName } from "../main";
+
+
 
 export class AnkiSyncAddon extends CornellAddon {
     id = "anki-sync";
@@ -29,17 +32,26 @@ export class AnkiSyncAddon extends CornellAddon {
 
     async invokeAnki(action: string, params: any = {}): Promise<any> {
         try {
+            // 🛡️ Controlador de aborto para evitar que Obsidian se congele si Anki está apagado
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 segundos de espera máxima
+
             const response = await fetch('http://localhost:8765', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action, version: 6, params })
+                body: JSON.stringify({ action, version: 6, params }),
+                signal: controller.signal
             });
+            
+            clearTimeout(timeoutId);
+
             const data = await response.json();
             if (data.error) throw new Error(`Anki API Error: ${data.error}`);
+            
             return data.result;
-        } catch (error: any) {
-            if (error.message && error.message.includes("Anki API Error")) throw error;
-            throw new Error(`Could not connect to Anki. Details: ${error.message}`);
+        } catch (error) {
+            console.error("AnkiConnect connection failed:", error);
+            throw new Notice("⚠️ Could not connect to Anki. Is Anki open with AnkiConnect installed?");
         }
     }
 
@@ -390,17 +402,25 @@ class AnkiDeckModal extends Modal {
 
         const syncBtn = btnContainer.createEl("button", { text: "🚀 Sync", cls: "mod-cta" });
         syncBtn.onclick = async () => {
-            const deckName = this.deckInput.value.trim();
-            if (!deckName) {
-                new Notice("You must enter a deck name.");
+            const rawDeckName = this.deckInput.value;
+            
+            // 🛡️ SANITIZACIÓN: Limpiamos el nombre del mazo antes de hacer nada
+            const safeDeckName = sanitizeAnkiDeckName(rawDeckName);
+
+            if (!safeDeckName) {
+                new Notice("⚠️ Invalid deck name. Please use alphanumeric characters.");
                 return;
             }
 
             if (!this.addon.recentDecks) this.addon.recentDecks = [];
-            this.addon.recentDecks = [deckName, ...this.addon.recentDecks.filter(d => d !== deckName)].slice(0, 5);
+            
+            // 🛡️ Guardamos el nombre SEGURO en el historial, no el raw
+            this.addon.recentDecks = [safeDeckName, ...this.addon.recentDecks.filter(d => d !== safeDeckName)].slice(0, 5);
             
             this.close();
-            await this.addon.processAndSendCards(this.file, deckName);
+            
+            // Enviamos el nombre seguro a procesar
+            await this.addon.processAndSendCards(this.file, safeDeckName);
         };
         
         this.deckInput.addEventListener("keypress", (e) => {

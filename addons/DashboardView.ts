@@ -11,6 +11,42 @@ export class CornellDashboardView extends ItemView {
     constructor(leaf: WorkspaceLeaf, plugin: CornellMarginalia) {
         super(leaf);
         this.plugin = plugin;
+
+        // 🛡️ MOTOR DE INTEGRIDAD DE DATOS (Renombrado Automático)
+        // Usamos registerEvent para evitar fugas de memoria (memory leaks)
+        this.plugin.registerEvent(
+            this.plugin.app.vault.on('rename', async (file, oldPath) => {
+                const data = this.plugin.settings.dashboardData as any;
+                let changed = false;
+                const oldName = oldPath.split('/').pop() || oldPath;
+
+                if (data.subjects) {
+                    data.subjects.forEach((subj: any) => {
+                        if (subj.syllabus) {
+                            subj.syllabus.forEach((topic: any) => {
+                                // 1. Actualizar Notas Adjuntas Manuales
+                                if (topic.attachedNotes) {
+                                    const idx = topic.attachedNotes.indexOf(oldPath);
+                                    const nameIdx = topic.attachedNotes.indexOf(oldName);
+                                    if (idx !== -1) { topic.attachedNotes[idx] = file.path; changed = true; }
+                                    else if (nameIdx !== -1) { topic.attachedNotes[nameIdx] = file.name; changed = true; }
+                                }
+                                // 2. Actualizar TaskNotes nativos
+                                if (topic.taskNoteId && (topic.taskNoteId === oldPath || topic.taskNoteId === oldName.replace('.md', ''))) {
+                                    topic.taskNoteId = file.path;
+                                    changed = true;
+                                }
+                            });
+                        }
+                    });
+                }
+                // Si encontramos un cambio, guardamos y refrescamos la UI
+                if (changed) {
+                    await this.plugin.saveSettings();
+                    this.onOpen(); 
+                }
+            })
+        );
     }
 
     // copiar el puerto de tasknote 
@@ -42,19 +78,30 @@ export class CornellDashboardView extends ItemView {
         const files = this.plugin.app.vault.getMarkdownFiles();
         const sources = subject.sources || [];
         
+        // Recolectar todas las notas adjuntas de los tópicos
+        const allAttachedNotes: string[] = [];
+        if (subject.syllabus) {
+            subject.syllabus.forEach((t: any) => {
+                if (t.attachedNotes) allAttachedNotes.push(...t.attachedNotes);
+            });
+        }
+
         const validFiles = files.filter((f: any) => {
-            return sources.some((src: string) => f.path.startsWith(src) || f.path === src || f.name === src);
+            const isSource = sources.some((src: string) => f.path.startsWith(src) || f.path === src || f.name === src);
+            const isAttached = allAttachedNotes.some((n: string) => f.path === n || f.name === n || f.name === `${n}.md`);
+            return isSource || isAttached;
         });
 
-        // --- NUEVAS MÉTRICAS ---
-        let activeNotesCount = 0;
-        let strictFlashcardsCount = 0;
+        // --- MÉTRICAS FLASHCARDS (SRS) ---
+        let totalFlashcards = 0;
+        let newFlashcards = 0;
+        let learningFlashcards = 0;
+        let matureFlashcards = 0;
 
-        // --- TUS MÉTRICAS ORIGINALES (SRS) ---
-        let totalMarginalias = 0;
-        let newNotes = 0;
-        let learningNotes = 0;
-        let matureNotes = 0;
+        // --- MÉTRICAS LECTURA (CONFIANZA) ---
+        let activeNotesCount = 0;
+        let totalConfidenceSum = 0;
+        let reviewedNotesCount = 0;
 
         for (const file of validFiles) {
             const content = await this.plugin.app.vault.cachedRead(file);
@@ -64,66 +111,94 @@ export class CornellDashboardView extends ItemView {
             for (let i = 0; i < lines.length; i++) {
                 if (lines[i].match(/%%[><](.*?)%%/)) {
                     hasMarginalia = true;
-                    totalMarginalias++;
 
-                    // Nuevo: Conteo SRS Estricto
+                    // 🧲 REGLA DE ORO: Solo contabilizar para Mastery SRS si tiene ';;'
                     if (lines[i].includes(';;')) {
-                        strictFlashcardsCount++;
-                    }
-
-                    // Tu lógica original de bloque y maestría
-                    const blockIdMatch = lines[i].match(/\^([a-zA-Z0-9]+)\s*$/);
-                    const blockId = blockIdMatch ? blockIdMatch[1] : `${file.basename}-L${i}`;
-                    
-                    const reviewData = this.plugin.settings.userStats.rhizomeReviews?.[blockId];
-                    
-                    if (!reviewData || reviewData.lastReviewed === 0) {
-                        newNotes++;
-                    } else if (reviewData.interval >= 21) { 
-                        matureNotes++;
-                    } else {
-                        learningNotes++;
+                        totalFlashcards++;
+                        const blockIdMatch = lines[i].match(/\^([a-zA-Z0-9]+)\s*$/);
+                        const blockId = blockIdMatch ? blockIdMatch[1] : `${file.basename}-L${i}`;
+                        
+                        const reviewData = this.plugin.settings.userStats?.rhizomeReviews?.[blockId];
+                        
+                        if (!reviewData || reviewData.lastReviewed === 0) {
+                            newFlashcards++;
+                        } else if (reviewData.interval >= 21) { 
+                            matureFlashcards++;
+                        } else {
+                            learningFlashcards++;
+                        }
                     }
                 }
             }
-            if (hasMarginalia) activeNotesCount++;
+            
+            const isAttached = allAttachedNotes.some((n: string) => file.path === n || file.name === n || file.name === `${n}.md`);
+            
+            // Si la nota tiene marginalias O fue adjuntada, cuenta para Lectura Activa
+            if (hasMarginalia || isAttached) {
+                activeNotesCount++;
+                const readingData = this.plugin.settings.userStats?.activeReading?.[file.path];
+                if (readingData && readingData.confidence) {
+                    reviewedNotesCount++;
+                    totalConfidenceSum += readingData.confidence;
+                }
+            }
         }
 
-        if (totalMarginalias === 0) {
-            container.createDiv({ text: "No marginalias found.", cls: "text-muted", attr: { style: "font-size: 0.8em; margin-top: 10px;" } });
+        if (activeNotesCount === 0 && totalFlashcards === 0) {
+            container.createDiv({ text: "No active notes or flashcards found.", cls: "text-muted", attr: { style: "font-size: 0.8em; margin-top: 10px;" } });
             return;
         }
 
-        // 1. AÑADIMOS LAS NUEVAS ETIQUETAS ELEGANTES
+        // 1. ETIQUETAS ELEGANTES (Totales)
         container.createDiv({ attr: { style: "display: flex; gap: 15px; margin-bottom: 10px; font-size: 0.9em; background: var(--background-secondary-alt); padding: 8px; border-radius: 6px;" } }).innerHTML = `
-            <div title="Notas completas con apuntes marginales">📄 <b>${activeNotesCount}</b> Notas</div>
-            <div title="Tarjetas estrictas (Pregunta ;; Respuesta)">🗂️ <b>${strictFlashcardsCount}</b> Flashcards</div>
+            <div title="Notas completas evaluables">📄 <b>${activeNotesCount}</b> Notas</div>
+            <div title="Tarjetas estrictas (Pregunta ;; Respuesta)">🗂️ <b>${totalFlashcards}</b> Flashcards</div>
         `;
 
-        // 2. RESTAURAMOS TU BARRA DE PROGRESO
-        const reviewedNotes = totalMarginalias - newNotes;
-        const progressPct = Math.round((reviewedNotes / totalMarginalias) * 100);
+        // 2. BARRA DE MASTERY (FLASHCARDS SRS)
+        if (totalFlashcards > 0) {
+            const reviewedFlashcards = totalFlashcards - newFlashcards;
+            const progressPct = Math.round((reviewedFlashcards / totalFlashcards) * 100);
 
-        const barWrapper = container.createDiv({ attr: { style: "width: 100%; height: 6px; background: var(--background-modifier-border); border-radius: 4px; margin: 10px 0 6px 0; overflow: hidden; display: flex;" }});
-        
-        if (learningNotes > 0) {
-            const lPct = (learningNotes / totalMarginalias) * 100;
-            barWrapper.createDiv({ attr: { style: `height: 100%; width: ${lPct}%; background: var(--color-orange);` }});
-        }
-        if (matureNotes > 0) {
-            const mPct = (matureNotes / totalMarginalias) * 100;
-            barWrapper.createDiv({ attr: { style: `height: 100%; width: ${mPct}%; background: var(--color-green);` }});
+            const masteryRow = container.createDiv({ attr: { style: "display: flex; justify-content: space-between; font-size: 0.8em; color: var(--text-muted); align-items: center; margin-top: 5px;" }});
+            masteryRow.createSpan({ text: `Mastery (SRS): ${progressPct}%`, attr: { style: "font-weight: bold; color: var(--text-normal);" }});
+            
+            const badges = masteryRow.createSpan({ attr: { style: "display: flex; gap: 8px; font-family: monospace; font-size: 0.9em;" }});
+            if (newFlashcards > 0) badges.createSpan({ text: `🌱 ${newFlashcards}`, title: "New/Unseen" });
+            if (learningFlashcards > 0) badges.createSpan({ text: `🔥 ${learningFlashcards}`, title: "Learning" });
+            if (matureFlashcards > 0) badges.createSpan({ text: `🌳 ${matureFlashcards}`, title: "Mature (21+ days)" });
+
+            const barWrapper = container.createDiv({ attr: { style: "width: 100%; height: 6px; background: var(--background-modifier-border); border-radius: 4px; margin: 4px 0 10px 0; overflow: hidden; display: flex;" }});
+            if (learningFlashcards > 0) {
+                const lPct = (learningFlashcards / totalFlashcards) * 100;
+                barWrapper.createDiv({ attr: { style: `height: 100%; width: ${lPct}%; background: var(--color-orange);` }});
+            }
+            if (matureFlashcards > 0) {
+                const mPct = (matureFlashcards / totalFlashcards) * 100;
+                barWrapper.createDiv({ attr: { style: `height: 100%; width: ${mPct}%; background: var(--color-green);` }});
+            }
+        } else {
+            container.createDiv({ text: "Sin Flashcards SRS configuradas.", cls: "text-muted", attr: { style: "font-size: 0.8em; margin-bottom: 10px;" } });
         }
 
-        // 3. RESTAURAMOS TUS TEXTOS Y MEDALLAS
-        const statsTextRow = container.createDiv({ attr: { style: "display: flex; justify-content: space-between; font-size: 0.8em; color: var(--text-muted); align-items: center;" }});
-        
-        statsTextRow.createSpan({ text: `Mastery: ${progressPct}% (${reviewedNotes}/${totalMarginalias})`, attr: { style: "font-weight: bold; color: var(--text-normal);" }});
-        
-        const badges = statsTextRow.createSpan({ attr: { style: "display: flex; gap: 8px; font-family: monospace; font-size: 0.9em;" }});
-        if (newNotes > 0) badges.createSpan({ text: `🌱 ${newNotes}`, title: "New/Unseen" });
-        if (learningNotes > 0) badges.createSpan({ text: `🔥 ${learningNotes}`, title: "Learning" });
-        if (matureNotes > 0) badges.createSpan({ text: `🌳 ${matureNotes}`, title: "Mature (21+ days)" });
+        // 3. BARRA DE CONFIANZA (LECTURA ACTIVA)
+        if (activeNotesCount > 0) {
+            const avgConfidence = reviewedNotesCount > 0 ? (totalConfidenceSum / reviewedNotesCount).toFixed(1) : "0.0";
+            const confPct = reviewedNotesCount > 0 ? Math.round(((totalConfidenceSum / reviewedNotesCount) / 10) * 100) : 0;
+            
+            let confColor = "var(--color-red)";
+            if (confPct >= 50) confColor = "var(--color-orange)";
+            if (confPct >= 80) confColor = "var(--color-green)";
+
+            const confRow = container.createDiv({ attr: { style: "display: flex; justify-content: space-between; font-size: 0.8em; color: var(--text-muted); align-items: center;" }});
+            confRow.createSpan({ text: `Confidence (Reading): ${avgConfidence}/10`, attr: { style: "font-weight: bold; color: var(--text-normal);" }});
+            confRow.createSpan({ text: `📝 ${reviewedNotesCount}/${activeNotesCount} notes`, attr: { style: "font-size: 0.9em;" }});
+
+            const confBarWrapper = container.createDiv({ attr: { style: "width: 100%; height: 6px; background: var(--background-modifier-border); border-radius: 4px; margin: 4px 0 6px 0; overflow: hidden; display: flex;" }});
+            if (confPct > 0) {
+                confBarWrapper.createDiv({ attr: { style: `height: 100%; width: ${confPct}%; background: ${confColor};` }});
+            }
+        }
     }
     renderTimeline(container: HTMLElement) {
         container.empty();
@@ -391,54 +466,89 @@ export class CornellDashboardView extends ItemView {
                 }
             };
 
-            // 🌟 MAGIA 9: Cálculo de Mastery Sincronizado con el Widget Subjects
+            // 🌟 MAGIA 9: Cálculo de Mastery Y Confidence en Timeline
             (async () => {
                 const vaultFiles = this.plugin.app.vault.getMarkdownFiles();
                 const sources = exam.sources || [];
-                const validFiles = vaultFiles.filter((f: any) => sources.some((src: string) => f.path.startsWith(src) || f.path === src || f.name === src));
                 
-                let totalMarginalias = 0;
-                let newNotes = 0;
+                const allAttachedNotes: string[] = [];
+                if (exam.syllabus) {
+                    exam.syllabus.forEach((t: any) => {
+                        if (t.attachedNotes) allAttachedNotes.push(...t.attachedNotes);
+                    });
+                }
 
-                // Escaneamos las notas usando la MISMA lógica del widget de Subjects
+                const validFiles = vaultFiles.filter((f: any) => {
+                    const isSource = sources.some((src: string) => f.path.startsWith(src) || f.path === src || f.name === src);
+                    const isAttached = allAttachedNotes.some((n: string) => f.path === n || f.name === n || f.name === `${n}.md`);
+                    return isSource || isAttached;
+                });
+                
+                let totalFlashcards = 0;
+                let newFlashcards = 0;
+                
+                let activeNotesCount = 0;
+                let totalConfidenceSum = 0;
+                let reviewedNotesCount = 0;
+
                 for (const file of validFiles) {
                     const content = await this.plugin.app.vault.cachedRead(file);
                     const lines = content.split('\n');
+                    let hasMarginalia = false;
+
                     for (let i = 0; i < lines.length; i++) {
                         if (lines[i].match(/%%[><](.*?)%%/)) {
-                            totalMarginalias++;
-                            const blockIdMatch = lines[i].match(/\^([a-zA-Z0-9]+)\s*$/);
-                            const blockId = blockIdMatch ? blockIdMatch[1] : `${file.basename}-L${i}`;
-                            const reviewData = this.plugin.settings.userStats?.rhizomeReviews?.[blockId];
-                            
-                            // Si no hay datos, es una nota nueva/no repasada
-                            if (!reviewData || reviewData.lastReviewed === 0) {
-                                newNotes++;
+                            hasMarginalia = true;
+                            if (lines[i].includes(';;')) {
+                                totalFlashcards++;
+                                const blockIdMatch = lines[i].match(/\^([a-zA-Z0-9]+)\s*$/);
+                                const blockId = blockIdMatch ? blockIdMatch[1] : `${file.basename}-L${i}`;
+                                const reviewData = this.plugin.settings.userStats?.rhizomeReviews?.[blockId];
+                                
+                                if (!reviewData || reviewData.lastReviewed === 0) {
+                                    newFlashcards++;
+                                }
                             }
+                        }
+                    }
+                    
+                    const isAttached = allAttachedNotes.some((n: string) => file.path === n || file.name === n || file.name === `${n}.md`);
+                    if (hasMarginalia || isAttached) {
+                        activeNotesCount++;
+                        const readingData = this.plugin.settings.userStats?.activeReading?.[file.path];
+                        if (readingData && readingData.confidence) {
+                            reviewedNotesCount++;
+                            totalConfidenceSum += readingData.confidence;
                         }
                     }
                 }
 
-                if (totalMarginalias > 0) {
-                    // Calculamos el mismo porcentaje exacto que en calculateSubjectStats
-                    const reviewedNotes = totalMarginalias - newNotes;
-                    const progressPct = Math.round((reviewedNotes / totalMarginalias) * 100);
+                let displayPct = 0;
+                let displayLabel = "";
 
-                    // Mapeo de Colores Térmicos
-                    let masteryColor = "var(--color-red)"; // Peligro / 0-29%
-                    if (progressPct >= 30) masteryColor = "var(--color-orange)";
-                    if (progressPct >= 50) masteryColor = "var(--color-yellow)";
-                    if (progressPct >= 75) masteryColor = "var(--color-green)"; // Sólido
-                    if (progressPct >= 90) masteryColor = "var(--color-cyan)";  // Dominio absoluto
+                // Priorizamos mostrar Mastery si hay Flashcards. Si no, mostramos Confidence.
+                if (totalFlashcards > 0) {
+                    const reviewedNotes = totalFlashcards - newFlashcards;
+                    displayPct = Math.round((reviewedNotes / totalFlashcards) * 100);
+                    displayLabel = `📊 Mastery: ${displayPct}%\n🗂️ Flashcards: ${reviewedNotes}/${totalFlashcards}`;
+                } else if (activeNotesCount > 0) {
+                    displayPct = reviewedNotesCount > 0 ? Math.round(((totalConfidenceSum / reviewedNotesCount) / 10) * 100) : 0;
+                    displayLabel = `📖 Confidence: ${displayPct}%\n📝 Notes: ${reviewedNotesCount}/${activeNotesCount}`;
+                } else {
+                    displayLabel = `Sin contenido para evaluar`;
+                }
 
-                    // Aplicamos el color base al texto
+                if (totalFlashcards > 0 || activeNotesCount > 0) {
+                    let masteryColor = "var(--color-red)"; 
+                    if (displayPct >= 30) masteryColor = "var(--color-orange)";
+                    if (displayPct >= 50) masteryColor = "var(--color-yellow)";
+                    if (displayPct >= 75) masteryColor = "var(--color-green)"; 
+                    if (displayPct >= 90) masteryColor = "var(--color-cyan)"; 
+
                     label.style.color = masteryColor;
-                    
-                    // Añadimos el Tooltip nativo para ver la data exacta
-                    label.setAttribute("aria-label", `📊 Mastery: ${progressPct}%\nTarjetas: ${totalMarginalias}`);
+                    label.setAttribute("aria-label", displayLabel);
                     label.setAttribute("data-tooltip-position", "top");
 
-                    // Efecto Hover: Brillo neón + Zoom
                     label.onmouseenter = () => {
                         label.style.textShadow = `0 0 10px ${masteryColor}`;
                         label.style.transform = "scale(1.05) translateX(5px)";
@@ -450,17 +560,10 @@ export class CornellDashboardView extends ItemView {
                         label.style.background = "transparent";
                     };
                 } else {
-                    // Si no hay tarjetas, efecto hover estándar con el color de la materia
-                    label.setAttribute("aria-label", `Sin tarjetas para evaluar`);
+                    label.setAttribute("aria-label", displayLabel);
                     label.setAttribute("data-tooltip-position", "top");
-                    label.onmouseenter = () => { 
-                        label.style.transform = "scale(1.05) translateX(5px)"; 
-                        label.style.color = color; 
-                    };
-                    label.onmouseleave = () => { 
-                        label.style.transform = "scale(1) translateX(0)"; 
-                        label.style.color = "var(--text-normal)"; 
-                    };
+                    label.onmouseenter = () => { label.style.transform = "scale(1.05) translateX(5px)"; label.style.color = color; };
+                    label.onmouseleave = () => { label.style.transform = "scale(1) translateX(0)"; label.style.color = "var(--text-normal)"; };
                 }
             })();
         });
@@ -1237,25 +1340,112 @@ cramBtn.onclick = (event: MouseEvent) => {
                             
                             const ruleSpan = topicInfo.createSpan({ text: `Rule: ${topic.rule} (Scanning...)`, attr: { style: "font-size: 0.75em; color: var(--interactive-accent); font-family: monospace;" }});
 
+                            // --- INICIO NUEVO: Contenedor de notas adjuntas y TaskNote ---
+                            const attachmentsDiv = topicInfo.createDiv({ attr: { style: "display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; align-items: center;" }});
+                            
+                            // 1. Mostrar TaskNote si existe y leer su estado (Ciclo de Vida)
+                            if (topic.taskNoteId && topic.taskNoteId !== "synced") {
+                                const tnChip = attachmentsDiv.createSpan({ cls: "folder-chip", attr: { style: "display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; font-size: 0.75em; background: var(--color-blue); color: white; border-radius: 4px; cursor: pointer; border: 1px solid var(--background-modifier-border); transition: background 0.3s;" }});
+                                const iconSpan = tnChip.createSpan();
+                                setIcon(iconSpan, "check-circle");
+                                const textSpan = tnChip.createSpan({ text: "TaskNote" });
+                                
+                                // 🔄 Escáner asíncrono súper ligero de estado
+                                (async () => {
+                                    let pathToOpen = topic.taskNoteId.endsWith('.md') ? topic.taskNoteId : `${topic.taskNoteId}.md`;
+                                    const file = this.plugin.app.metadataCache.getFirstLinkpathDest(pathToOpen, "");
+                                    if (file && file instanceof TFile) {
+                                        const content = await this.plugin.app.vault.cachedRead(file); // Cached read = 0 lag
+                                        // Detecta "- [x]" o metadata "status: done"
+                                        if (/- \[[xX]\]/.test(content) || /status:\s*done/i.test(content) || /status:\s*completed/i.test(content)) {
+                                            tnChip.style.background = "var(--color-green)";
+                                            textSpan.innerText = "Done";
+                                        }
+                                    }
+                                })();
+
+                                tnChip.onclick = (e: MouseEvent) => {
+                                    e.stopPropagation();
+                                    let pathToOpen = topic.taskNoteId.endsWith('.md') ? topic.taskNoteId : `${topic.taskNoteId}.md`;
+                                    const file = this.plugin.app.metadataCache.getFirstLinkpathDest(pathToOpen, "");
+                                    if (file) this.plugin.app.workspace.getLeaf(false).openFile(file);
+                                    else new Notice("⚠️ No se pudo encontrar el archivo de TaskNote.");
+                                };
+                            }
+
+                            // 2. Mostrar notas adjuntas manualmente
+                            if (topic.attachedNotes && topic.attachedNotes.length > 0) {
+                                topic.attachedNotes.forEach((notePath: string, idx: number) => {
+                                    const nChip = attachmentsDiv.createSpan({ cls: "folder-chip", attr: { style: "display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; font-size: 0.75em; border-radius: 4px; cursor: pointer; background: var(--background-secondary);" }});
+                                    setIcon(nChip.createSpan(), "file-text");
+                                    nChip.createSpan({ text: notePath.split('/').pop() || notePath });
+                                    
+                                    const delBtn = nChip.createSpan({ text: "×", attr: { style: "color: var(--text-error); margin-left: 2px; padding: 0 2px;" }});
+                                    delBtn.onclick = async (e: MouseEvent) => {
+                                        e.stopPropagation();
+                                        topic.attachedNotes.splice(idx, 1);
+                                        await this.plugin.saveSettings();
+                                        this.onOpen(); 
+                                    };
+
+                                    nChip.onclick = (e: MouseEvent) => {
+                                        e.stopPropagation();
+                                        const file = this.plugin.app.metadataCache.getFirstLinkpathDest(notePath, "");
+                                        if (file) this.plugin.app.workspace.getLeaf(false).openFile(file);
+                                        else new Notice(`⚠️ Nota no encontrada: ${notePath}`);
+                                    };
+                                });
+                            }
+
+                            // 3. Botón "+" para agregar notas (MODAL NATIVO)
+                            const addBtn = attachmentsDiv.createSpan({ attr: { style: "cursor: pointer; padding: 2px; color: var(--text-muted); display: flex; align-items: center;" }});
+                            setIcon(addBtn, "plus");
+                            addBtn.title = "Adjuntar nota a este tema";
+                            addBtn.onclick = (e: MouseEvent) => {
+                                e.stopPropagation();
+                                // Invocamos nuestro nuevo modal nativo en lugar del prompt
+                                new AttachNoteModal(this.plugin.app, this.plugin, topic, async (noteName: string) => {
+                                    if (!topic.attachedNotes) topic.attachedNotes = [];
+                                    topic.attachedNotes.push(noteName);
+                                    await this.plugin.saveSettings();
+                                    this.onOpen();
+                                }).open();
+                            };
+                            // --- FIN NUEVO ---
                             (async () => {
                                 const validFiles = this.plugin.app.vault.getMarkdownFiles();
-                                let matchCount = 0; const ruleLower = topic.rule.toLowerCase();
+                                let matchCount = 0; 
+                                const ruleLower = topic.rule ? topic.rule.toLowerCase() : "";
+                                
                                 for (const file of validFiles) {
+                                    // Verificamos si la nota fue adjuntada manualmente a este tema
+                                    const isAttached = topic.attachedNotes?.some((n: string) => file.path === n || file.name === n || file.name === `${n}.md`);
+                                    
                                     const content = await this.plugin.app.vault.cachedRead(file);
                                     const lines = content.split('\n');
                                     for (const line of lines) {
                                         const match = line.match(/%%[><](.*?)%%/);
-                                        if (match && match[1].toLowerCase().includes(ruleLower)) matchCount++;
+                                        if (match) {
+                                            // La sumamos si fue adjuntada O si coincide la regla de texto
+                                            if (isAttached || (ruleLower && match[1].toLowerCase().includes(ruleLower))) {
+                                                matchCount++;
+                                            }
+                                        }
                                     }
                                 }
                                 ruleSpan.innerText = `Rule: ${topic.rule} 🎯 ${matchCount} notas`;
                                 if (matchCount === 0) ruleSpan.style.color = "var(--color-red)"; 
+                                else ruleSpan.style.color = "var(--color-green)"; // Feedback positivo
                             })();
 
                             const playSubBtn = topicRow.createEl("button", { title: `Cram ${topic.name}`, attr: { style: "padding: 4px 8px; height: auto;" }});
                             setIcon(playSubBtn, "zap"); 
                             // @ts-ignore
-                            playSubBtn.onclick = (e: MouseEvent) => { e.stopPropagation(); new ReviewSessionManager(this.plugin, subject, true, topic.rule).start(); };
+                            playSubBtn.onclick = (e: MouseEvent) => { 
+                                e.stopPropagation(); 
+                                // Pasamos el objeto 'topic' COMPLETO en lugar de solo la regla
+                                new ReviewSessionManager(this.plugin, subject, true, topic).start(); 
+                            };
                         });
                     }
                 });
@@ -1660,6 +1850,12 @@ export class WeeklyPlannerModal extends Modal {
     plugin: any;
     onCloseCallback: () => void;
     currentModeView: string = 'optimal'; // Capa de energía actual en la vista
+    copiedBlocks: any[] | null = null; // 📋 Portapapeles en memoria para copiar días enteros
+    
+    // --- INICIO NUEVO: Memoria temporal del formulario ---
+    lastSelectedDay: string | null = null;
+    lastEndTime: string | null = null;
+    // --- FIN NUEVO ---
 
     constructor(app: App, plugin: any, onCloseCallback: () => void) {
         super(app);
@@ -1711,10 +1907,22 @@ export class WeeklyPlannerModal extends Modal {
         ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].forEach((day, index) => {
             daySelect.createEl("option", { value: index.toString(), text: day });
         });
-        daySelect.value = new Date().getDay().toString();
+        
+        // 🧠 Memoria: Usar el último día editado o el día actual por defecto
+        daySelect.value = this.lastSelectedDay !== null ? this.lastSelectedDay : new Date().getDay().toString();
 
-        const startInput = formContainer.createEl("input", { type: "time", value: "08:00" });
-        const endInput = formContainer.createEl("input", { type: "time", value: "09:00" });
+        // 🧠 Memoria: El inicio será el final del bloque anterior
+        let defaultStart = this.lastEndTime || "08:00";
+        let defaultEnd = "09:00";
+        
+        if (this.lastEndTime) {
+            const [h, m] = this.lastEndTime.split(':').map(Number);
+            const nextH = (h + 1) % 24; // Sumamos 1 hora automáticamente, reseteando a las 00 si pasa de 23
+            defaultEnd = `${nextH.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+        }
+
+        const startInput = formContainer.createEl("input", { type: "time", value: defaultStart });
+        const endInput = formContainer.createEl("input", { type: "time", value: defaultEnd });
 
         const typeSelect = formContainer.createEl("select");
         typeSelect.createEl("option", { value: "study", text: "Study Session" });
@@ -1753,6 +1961,10 @@ export class WeeklyPlannerModal extends Modal {
             this.plugin.settings.dashboardData.routineBlocks.push(newBlock);
             await this.plugin.saveSettings();
             
+            // 🧠 Guardamos los datos en la memoria a corto plazo ANTES de borrar/recargar
+            this.lastSelectedDay = daySelect.value;
+            this.lastEndTime = endInput.value;
+
             titleInput.value = ""; 
             this.renderUI(); // Redibujar la UI
             new Notice("Block added to " + this.currentModeView + " plan!");
@@ -1770,7 +1982,69 @@ export class WeeklyPlannerModal extends Modal {
 
         days.forEach((dayName, dayIndex) => {
             const dayCol = container.createDiv({ cls: "weekly-day-col" });
-            dayCol.createDiv({ cls: "weekly-day-header", text: dayName });
+            
+            // --- INICIO NUEVO: Cabecera con Botones Copiar/Pegar ---
+            const headerRow = dayCol.createDiv({ cls: "weekly-day-header", attr: { style: "display: flex; justify-content: space-between; align-items: center;" }});
+            headerRow.createSpan({ text: dayName });
+            
+            const actionsSpan = headerRow.createSpan({ attr: { style: "display: flex; gap: 5px;" }});
+            
+            // Botón Copiar
+            const copyBtn = actionsSpan.createEl("button", { title: "Copiar plan de este día", attr: { style: "padding: 2px 6px; background: transparent; box-shadow: none; cursor: pointer;" }});
+            setIcon(copyBtn, "copy");
+            copyBtn.onclick = () => {
+                // Filtramos solo los bloques que pertenecen a este día y a la capa actual (ej. Optimal)
+                const dayBlocksToCopy = blocks.filter((b: any) => b.dayOfWeek === dayIndex && (b.mode === this.currentModeView || (!b.mode && this.currentModeView === 'optimal')));
+                
+                if (dayBlocksToCopy.length === 0) {
+                    new Notice(`⚠️ No hay nada que copiar en ${dayName}.`);
+                    return;
+                }
+                
+                // Hacemos una clonación profunda (Deep Clone) para que no haya referencias cruzadas
+                this.copiedBlocks = JSON.parse(JSON.stringify(dayBlocksToCopy)); 
+                new Notice(`📋 ${dayName} copiado!`);
+                this.renderUI(); // Refrescamos para encender visualmente el botón de pegar
+            };
+
+            // Botón Pegar
+            const pasteBtn = actionsSpan.createEl("button", { title: "Pegar bloques aquí (Sobreescribe el día)", attr: { style: "padding: 2px 6px; background: transparent; box-shadow: none; cursor: pointer; transition: color 0.2s;" }});
+            setIcon(pasteBtn, "clipboard-paste");
+            
+            // UX: Apagamos el botón visualmente si no hay nada en el portapapeles
+            if (!this.copiedBlocks || this.copiedBlocks.length === 0) {
+                pasteBtn.style.opacity = "0.3";
+                pasteBtn.style.cursor = "not-allowed";
+            } else {
+                pasteBtn.style.color = "var(--interactive-accent)";
+            }
+
+            pasteBtn.onclick = async () => {
+                if (!this.copiedBlocks || this.copiedBlocks.length === 0) {
+                    new Notice("⚠️ Primero copia el contenido de un día.");
+                    return;
+                }
+                
+                // 1. BARRIDO (Limpiamos los bloques actuales de este día destino para evitar conflictos/duplicados)
+                this.plugin.settings.dashboardData.routineBlocks = this.plugin.settings.dashboardData.routineBlocks.filter((b: any) => 
+                    !(b.dayOfWeek === dayIndex && (b.mode === this.currentModeView || (!b.mode && this.currentModeView === 'optimal')))
+                );
+
+                // 2. INYECCIÓN (Mapeamos los bloques copiados asignándoles el nuevo día y nuevos IDs aleatorios)
+                const newBlocks = this.copiedBlocks.map(b => ({
+                    ...b,
+                    id: Math.random().toString(36).substring(2, 9), // ID fresco para que el Tracker no se confunda
+                    dayOfWeek: dayIndex // Lo asignamos a la columna donde acabamos de pegar
+                }));
+
+                // Guardamos en la base de datos
+                this.plugin.settings.dashboardData.routineBlocks.push(...newBlocks);
+                await this.plugin.saveSettings();
+                
+                new Notice(`✅ Plan pegado en ${dayName}.`);
+                this.renderUI(); // Redibujamos la grilla para ver los cambios mágicamente
+            };
+            // --- FIN NUEVO ---
 
             // FILTRO DE CONTINGENCIA:
             // Mostramos los bloques que coinciden con el día Y con el modo actual.
@@ -2006,8 +2280,38 @@ export class SubjectEditorModal extends Modal {
                 ruleInp.style.width = "180px";
                 ruleInp.onchange = () => topic.rule = ruleInp.value;
 
-                const delBtn = topicRow.createEl("span", { text: "×", attr: { style: "cursor: pointer; color: var(--text-error); font-weight: bold; padding: 0 5px;" }});
-                delBtn.onclick = () => { currentTopics.splice(idx, 1); renderTopicsEditor(); };
+                const delBtn = topicRow.createEl("span", { text: "×", attr: { style: "cursor: pointer; color: var(--text-error); font-weight: bold; padding: 0 5px;", title: "Eliminar tema" }});
+                delBtn.onclick = () => { 
+                    const topicToDelete = currentTopics[idx];
+                    
+                    // Función para eliminar el tema de la UI y la data
+                    const performDeletion = () => {
+                        currentTopics.splice(idx, 1); 
+                        renderTopicsEditor();
+                    };
+                    
+                    // 🗑️ Limpieza de Archivo (Usando nuestro Modal Nativo)
+                    if (topicToDelete.taskNoteId && topicToDelete.taskNoteId !== "synced") {
+                        new ConfirmDeleteModal(
+                            this.plugin.app,
+                            "🗑️ Eliminar TaskNote",
+                            `¿Quieres enviar también el archivo TaskNote "${topicToDelete.name}" a la papelera del sistema?`,
+                            async () => {
+                                // Si el usuario confirma, borramos el archivo
+                                let pathToOpen = topicToDelete.taskNoteId.endsWith('.md') ? topicToDelete.taskNoteId : `${topicToDelete.taskNoteId}.md`;
+                                const file = this.plugin.app.metadataCache.getFirstLinkpathDest(pathToOpen, "");
+                                if (file) {
+                                    await this.plugin.app.vault.trash(file, true); // true = enviar a la papelera del OS
+                                    new Notice(`🗑️ TaskNote enviada a la papelera.`);
+                                }
+                                performDeletion(); // Luego borramos el tema
+                            }
+                        ).open();
+                    } else {
+                        // Si no hay TaskNote asociado, simplemente borramos el tema
+                        performDeletion();
+                    }
+                };
             });
         };
         renderTopicsEditor();
@@ -2085,17 +2389,17 @@ export class ReviewSessionManager {
     plugin: any;
     subject: any;
     isCramMode: boolean;
-    topicRule: string | null;
-    sessionType: 'srs' | 'reading'; // 👈 NUEVO: Define qué UI y lógica usar
+    topic: any; // 👈 AHORA GUARDAMOS EL TOPIC COMPLETO
+    sessionType: 'srs' | 'reading';
     deck: any[] = [];
     currentIndex: number = 0;
     floatingBar: HTMLElement | null = null;
 
-    constructor(plugin: any, subject: any, isCramMode: boolean, topicRule: string | null = null, sessionType: 'srs' | 'reading' = 'srs') {
+    constructor(plugin: any, subject: any, isCramMode: boolean, topic: any = null, sessionType: 'srs' | 'reading' = 'srs') {
         this.plugin = plugin;
         this.subject = subject;
         this.isCramMode = isCramMode;
-        this.topicRule = topicRule;
+        this.topic = topic;
         this.sessionType = sessionType; 
     }
 
@@ -2121,8 +2425,22 @@ export class ReviewSessionManager {
         const sources = this.subject.sources || [];
         const now = Date.now();
 
-        const targetFiles = this.topicRule ? files : files.filter((f: TFile) => {
-            return sources.some((src: string) => f.path.startsWith(src) || f.path === src || f.name === src);
+        // 👈 INCLUIR LAS NOTAS ADJUNTAS AL TARGET (A NIVEL TEMA Y A NIVEL MATERIA)
+        const allAttachedNotes: string[] = [];
+        if (!this.topic && this.subject.syllabus) {
+            this.subject.syllabus.forEach((t: any) => {
+                if (t.attachedNotes) allAttachedNotes.push(...t.attachedNotes);
+            });
+        }
+
+        const targetFiles = this.topic ? files.filter((f: TFile) => {
+            const isSource = sources.some((src: string) => f.path.startsWith(src) || f.path === src || f.name === src);
+            const isAttached = this.topic.attachedNotes?.some((n: string) => f.path === n || f.name === n || f.name === `${n}.md`);
+            return isSource || isAttached;
+        }) : files.filter((f: TFile) => {
+            const isSource = sources.some((src: string) => f.path.startsWith(src) || f.path === src || f.name === src);
+            const isAttached = allAttachedNotes.some((n: string) => f.path === n || f.name === n || f.name === `${n}.md`);
+            return isSource || isAttached;
         });
 
         // Asegurarnos de que el registro de lectura exista
@@ -2161,9 +2479,11 @@ export class ReviewSessionManager {
                             continue; 
                         }
 
-                        // Filtro del Temario
-                        const ruleLower = this.topicRule ? this.topicRule.toLowerCase() : null;
-                        if (ruleLower && !rawText.includes(ruleLower)) continue;
+                        // Filtro del Temario (permite que notas adjuntas ignoren la regla de escaneo)
+                        const ruleLower = this.topic && this.topic.rule ? this.topic.rule.toLowerCase() : null;
+                        const isAttachedToTopic = this.topic && this.topic.attachedNotes?.some((n: string) => file.path === n || file.name === n || file.name === `${n}.md`);
+                        
+                        if (ruleLower && !isAttachedToTopic && !rawText.includes(ruleLower)) continue;
 
                         // 🛡️ ESCÁNER UNIVERSAL DE IDs: Atrapa el ID tanto si está afuera (vieja sintaxis) como adentro de los %% (nueva sintaxis)
                         const blockIdMatch = lines[i].match(/\^([a-zA-Z0-9]+)(?:\s*%%)?\s*$/);
@@ -2464,3 +2784,104 @@ export class CustomBlockModal extends Modal {
     onClose() { this.contentEl.empty(); }
 }
 
+// ==========================================
+// 📎 MODAL PARA ADJUNTAR NOTAS MANUALES
+// ==========================================
+export class AttachNoteModal extends Modal {
+    plugin: any;
+    topic: any;
+    onSave: (noteName: string) => void;
+
+    constructor(app: App, plugin: any, topic: any, onSave: (noteName: string) => void) {
+        super(app);
+        this.plugin = plugin;
+        this.topic = topic;
+        this.onSave = onSave;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.createEl("h2", { text: "📎 Adjuntar Nota" });
+        contentEl.createEl("p", { text: `Añade una nota al tema: ${this.topic.name}`, cls: "text-muted" });
+
+        const inputRow = contentEl.createDiv({ attr: { style: "display: flex; gap: 8px; margin-bottom: 20px;" }});
+        
+        // El input con autocompletado nativo
+        const noteInput = inputRow.createEl("input", { type: "text", placeholder: "Ej. Apuntes_Tema1.md" });
+        noteInput.style.flexGrow = "1";
+
+        const datalistId = `attach-list-${this.topic.id || Math.random()}`;
+        let datalist = document.getElementById(datalistId) as HTMLDataListElement;
+        if (!datalist) datalist = document.body.createEl("datalist", { attr: { id: datalistId } });
+        else datalist.empty();
+
+        this.plugin.app.vault.getMarkdownFiles().forEach((f: TFile) => {
+            datalist.createEl("option", { value: f.path });
+        });
+        noteInput.setAttribute("list", datalistId);
+
+        const saveBtn = inputRow.createEl("button", { text: "Añadir", cls: "mod-cta" });
+
+        const submitAction = () => {
+            const val = noteInput.value.trim();
+            if (val) {
+                this.onSave(val);
+                this.close();
+            } else {
+                new Notice("⚠️ Escribe el nombre de una nota.");
+            }
+        };
+
+        saveBtn.onclick = submitAction;
+        noteInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") submitAction();
+        });
+        
+        // Auto-enfocar el input al abrir
+        setTimeout(() => noteInput.focus(), 50);
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+// ==========================================
+// 🗑️ MODAL DE CONFIRMACIÓN DE BORRADO
+// ==========================================
+export class ConfirmDeleteModal extends Modal {
+    title: string;
+    message: string;
+    onConfirm: () => void;
+
+    constructor(app: App, title: string, message: string, onConfirm: () => void) {
+        super(app);
+        this.title = title;
+        this.message = message;
+        this.onConfirm = onConfirm;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        
+        contentEl.createEl("h2", { text: this.title });
+        contentEl.createEl("p", { text: this.message });
+
+        const btnContainer = contentEl.createDiv({ attr: { style: "display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;" }});
+        
+        const cancelBtn = btnContainer.createEl("button", { text: "Cancelar" });
+        cancelBtn.onclick = () => this.close();
+
+        const confirmBtn = btnContainer.createEl("button", { text: "Borrar", cls: "mod-warning" }); // Botón rojo
+        confirmBtn.onclick = () => {
+            this.onConfirm();
+            this.close();
+        };
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}

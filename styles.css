@@ -2464,3 +2464,70 @@ body.cornell-pdf-active-recall .cornell-reveal-sync .highlight {
     -webkit-backdrop-filter: none !important;
     opacity: 0.3 !important; 
 }
+
+/* ======================================================
+   💬 OVERLAY MODE: PÍLDORAS EXPANSIBLES EN PDF
+   ====================================================== */
+
+.cornell-pdf-pill {
+    position: absolute;
+    top: -12px;
+    right: -12px;
+    width: 24px;
+    height: 24px;
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: help;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    transition: transform 0.2s ease, background-color 0.2s ease;
+    pointer-events: auto !important; /* Vital para que detecte el ratón */
+}
+
+.cornell-pdf-pill:hover {
+    transform: scale(1.2);
+    background-color: var(--color-purple);
+}
+
+.cornell-pdf-pill svg {
+    width: 14px;
+    height: 14px;
+}
+
+.cornell-pill-expanded {
+    position: fixed;
+    z-index: 999999;
+    width: 380px;
+    max-height: 450px;
+    overflow-y: auto;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Ajustes para que las tarjetas se vean bien dentro del popover */
+.cornell-pill-expanded .cornell-sidebar-item {
+    background: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 5px;
+}
+/* ======================================================
+   💬 HOVER MODE: HACER TANGIBLES LOS RESALTADOS
+   ====================================================== */
+body.cornell-pdf-pills-mode .pdf-plus-backlink,
+body.cornell-pdf-pills-mode .rect-highlight,
+body.cornell-pdf-pills-mode .pdf-highlight,
+body.cornell-pdf-pills-mode .textLayer .highlight,
+body.cornell-pdf-pills-mode .annotationLayer .highlight {
+    pointer-events: auto !important;
+    cursor: pointer !important; /* 👈 Reparado: Ahora es una manito normal, no un '?' */
+}

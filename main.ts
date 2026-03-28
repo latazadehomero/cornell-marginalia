@@ -1871,6 +1871,9 @@ export class CornellNotesView extends ItemView {
     // 🧠 NUEVO: Memoria para el Active Recall en PDFs
     isActiveRecallPdfMode: boolean = false;
 
+    // 💬 NUEVO: Memoria para el Overlay Mode (Píldoras en PDF)
+    isPdfPillsModeActive: boolean = false;
+
     // ⚡ NUEVO: Memoria para el Filtro de Flashcards
     isFlashcardFilterActive: boolean = false;
 
@@ -2608,6 +2611,229 @@ export class CornellNotesView extends ItemView {
                 if ((this as any).pdfMouseOutSync) document.body.removeEventListener('mouseout', (this as any).pdfMouseOutSync);
                 currentSyncChain.forEach(el => el.classList.remove('cornell-reveal-sync'));
                 currentSyncChain = [];
+            }
+        };
+
+        // 💬 5. NUEVO BOTÓN: MODO OVERLAY (PÍLDORAS EXPANSIBLES)
+        const pdfPillsBtn = pillsContainer.createEl('span', { cls: 'cornell-color-pill', title: "Overlay Mode (Muestra las Marginalias sobre el PDF)" });
+        
+        pdfPillsBtn.style.backgroundColor = this.isPdfPillsModeActive ? 'var(--interactive-accent)' : 'transparent';
+        pdfPillsBtn.style.border = '1px solid var(--background-modifier-border)';
+        pdfPillsBtn.style.color = this.isPdfPillsModeActive ? 'white' : 'var(--text-muted)';
+        pdfPillsBtn.style.cursor = 'pointer';
+        pdfPillsBtn.style.position = 'relative';
+
+        setIcon(pdfPillsBtn, 'message-square-quote'); 
+
+        const pSvg = pdfPillsBtn.querySelector('svg');
+        if (pSvg) {
+            pSvg.style.width = '14px'; pSvg.style.height = '14px';
+            pSvg.style.strokeWidth = '2.2'; pSvg.style.position = 'absolute';
+            pSvg.style.top = '50%'; pSvg.style.left = '50%';
+            pSvg.style.transform = 'translate(-50%, -50%)';
+        }
+
+        pdfPillsBtn.onclick = () => {
+            this.isPdfPillsModeActive = !this.isPdfPillsModeActive;
+            
+            pdfPillsBtn.style.backgroundColor = this.isPdfPillsModeActive ? 'var(--interactive-accent)' : 'transparent';
+            pdfPillsBtn.style.color = this.isPdfPillsModeActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+            
+            // 🛡️ INYECCIÓN CSS FORZADA
+            let styleEl = document.getElementById('cornell-pdf-pills-style');
+            if (this.isPdfPillsModeActive) {
+                if (!styleEl) {
+                    styleEl = document.createElement('style');
+                    styleEl.id = 'cornell-pdf-pills-style';
+                    styleEl.innerHTML = `
+                        .pdf-viewer .pdf-plus-backlink, 
+                        .pdf-viewer .rect-highlight, 
+                        .pdf-viewer .pdf-highlight, 
+                        .pdf-viewer .textLayer .highlight,
+                        .pdf-viewer .annotationLayer .highlight {
+                            pointer-events: auto !important;
+                            cursor: pointer !important;
+                            z-index: 50 !important;
+                        }
+                    `;
+                    document.head.appendChild(styleEl);
+                }
+
+                new Notice("💬 Hover Mode: ON. Precisión Geométrica Activada.");
+
+                let currentTooltip: HTMLElement | null = null;
+                let hoverTimeout: NodeJS.Timeout | null = null;
+
+                (this as any).pdfPillMouseOver = (e: MouseEvent) => {
+                    const target = e.target as HTMLElement;
+                    if (!target || !target.matches) return;
+
+                    if (target.closest('.cornell-pill-expanded')) return;
+
+                    const isHighlight = target.matches('.pdf-plus-backlink, .rect-highlight, .pdf-highlight, .textLayer .highlight, .annotationLayer .highlight, .pdf-cropped-embed');
+                    
+                    if (isHighlight) {
+                        if (hoverTimeout) clearTimeout(hoverTimeout);
+                        if (currentTooltip) {
+                            currentTooltip.remove();
+                            currentTooltip = null;
+                        }
+
+                        const pageEl = target.closest('.page');
+                        const rawPageNum = pageEl ? pageEl.getAttribute('data-page-number') : null;
+                        if (!rawPageNum) return;
+
+                        // 🛡️ PARCHE DE SEGURIDAD (Sanitización Regex)
+                        // Destruimos cualquier carácter que no sea un número. 
+                        // Previene ataques ReDoS si un PDF malicioso inyecta caracteres de control.
+                        const pageNum = rawPageNum.replace(/\D/g, '');
+                        if (!pageNum) return;
+
+                        let exactAnnotId = target.getAttribute('data-annotation-id') || 
+                                           target.closest('[data-annotation-id]')?.getAttribute('data-annotation-id');
+
+                        // 📐 MATEMÁTICA PURA: Sacamos los datos físicos de la pantalla
+                        const pixelRect = target.getBoundingClientRect();
+                        const domAspect = pixelRect.width / pixelRect.height; 
+                        
+                        const domWidth = parseFloat(target.style.width);
+                        const domLeft = parseFloat(target.style.left);
+                        const domLeftRatio = domLeft / domWidth; 
+
+                        // 🧠 DETECTOR DE ESPECIES: ¿Es un Crop (Imagen) o es Texto?
+                        const isDomCrop = target.classList.contains('rect-highlight') || 
+                                          target.closest('.pdf-cropped-embed') || 
+                                          (target.classList.contains('pdf-plus-backlink') && pixelRect.height > 32);
+
+                        const pageRegex = new RegExp(`page=${pageNum}(?:\\D|$)`);
+                        
+                        // 🎯 FILTRO HÍBRIDO (Francotirador para Crops + Red para Textos)
+                        const exactNotes = this.cachedItems.filter((n: MarginaliaItem) => {
+                            const searchArea = `${n.outgoingLinks?.join(" ")} ${n.context || ""} ${n.rawText || ""}`;
+                            if (!pageRegex.test(searchArea)) return false;
+
+                            // 1. DNI EXACTO (Anotaciones nativas de texto)
+                            if (exactAnnotId && searchArea.includes(exactAnnotId)) {
+                                return true;
+                            }
+                            
+                            const isMarkdownCrop = searchArea.includes('&rect=');
+
+                            // 2. SI TOCASTE UN RECORTE (Crop en pantalla)
+                            if (isDomCrop) {
+                                if (isMarkdownCrop) {
+                                    // 📐 Matemática de Francotirador solo para los rectángulos
+                                    const rectMatch = searchArea.match(/rect=\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/);
+                                    if (rectMatch) {
+                                        const L = parseFloat(rectMatch[1]);
+                                        const B = parseFloat(rectMatch[2]);
+                                        const R = parseFloat(rectMatch[3]);
+                                        const T = parseFloat(rectMatch[4]);
+                                        
+                                        const pdfWidth = Math.abs(R - L);
+                                        const pdfHeight = Math.abs(T - B);
+                                        const pdfAspect = pdfWidth / pdfHeight;
+                                        const pdfLeftRatio = L / pdfWidth; 
+
+                                        const diffAspect = Math.abs(domAspect - pdfAspect) / Math.max(domAspect, pdfAspect);
+                                        const diffLeft = Math.abs(domLeftRatio - pdfLeftRatio); 
+                                        
+                                        // 15% de tolerancia por los diferentes niveles de zoom del PDF
+                                        if (diffAspect < 0.15 && diffLeft < 0.15) {
+                                            return true; 
+                                        }
+                                    }
+                                }
+                                return false; // Es un crop, pero la matemática falló. Muere aquí.
+                            }
+
+                            // 3. SI TOCASTE TEXTO CHICO (Red de seguridad)
+                            if (!isDomCrop) {
+                                // Aceptamos las notas de esta página que TAMBIÉN sean de texto 
+                                // (es decir, filtramos y ocultamos los crops para no ensuciar)
+                                if (!isMarkdownCrop) {
+                                    return true;
+                                }
+                            }
+
+                            return false; 
+                        });
+
+                        // Si la cacería no dio frutos, nos retiramos en silencio
+                        if (exactNotes.length === 0) return;
+
+                        // 🎈 CREACIÓN DEL GLOBO FLOTANTE
+                        const tooltip = document.createElement('div');
+                        currentTooltip = tooltip; 
+                        tooltip.className = 'popover cornell-pill-expanded';
+                        
+                        const title = document.createElement('h4');
+                        // Título dinámico
+                        if (exactNotes.length === 1 && exactAnnotId) title.innerText = `🎯 Exact Match`;
+                        else if (isDomCrop) title.innerText = `🎯 Crop Match`;
+                        else title.innerText = `📝 Page ${pageNum} Marginalias`;
+
+                        title.style.margin = '0 0 10px 0';
+                        title.style.borderBottom = '1px solid var(--background-modifier-border)';
+                        title.style.paddingBottom = '5px';
+                        title.style.color = (exactNotes.length === 1 || isDomCrop) ? 'var(--interactive-accent)' : 'var(--text-muted)';
+                        tooltip.appendChild(title);
+
+                        exactNotes.forEach((note: MarginaliaItem) => {
+                            const itemDiv = this.createItemDiv(note, tooltip);
+                            itemDiv.classList.add('cornell-sidebar-item');
+                        });
+
+                        tooltip.style.visibility = 'hidden';
+                        document.body.appendChild(tooltip);
+
+                        // 📐 Posicionamiento Seguro
+                        requestAnimationFrame(() => {
+                            let leftPos = e.clientX + 15;
+                            if (leftPos + tooltip.offsetWidth > window.innerWidth) leftPos = e.clientX - tooltip.offsetWidth - 15;
+                            
+                            let topPos = e.clientY + 15;
+                            if (topPos + tooltip.offsetHeight > window.innerHeight) topPos = window.innerHeight - tooltip.offsetHeight - 15;
+                            
+                            tooltip.style.left = `${Math.max(10, leftPos)}px`;
+                            tooltip.style.top = `${Math.max(10, topPos)}px`;
+                            tooltip.style.visibility = 'visible';
+                        });
+
+                        tooltip.addEventListener('mouseleave', (ev) => {
+                            const related = ev.relatedTarget as HTMLElement;
+                            if (related && related.closest('.pdf-plus-backlink, .rect-highlight, .pdf-highlight')) return;
+                            if (currentTooltip) { currentTooltip.remove(); currentTooltip = null; }
+                        });
+                    }
+                };
+
+                (this as any).pdfPillMouseOut = (e: MouseEvent) => {
+                    const target = e.target as HTMLElement;
+                    const related = e.relatedTarget as HTMLElement;
+                    
+                    if (target.matches('.pdf-plus-backlink, .rect-highlight, .pdf-highlight, .textLayer .highlight, .annotationLayer .highlight, .pdf-cropped-embed')) {
+                        if (related && related.closest('.cornell-pill-expanded')) return;
+                        if (related && related.closest('.pdf-plus-backlink, .rect-highlight, .pdf-highlight')) return;
+
+                        hoverTimeout = setTimeout(() => {
+                            if (currentTooltip) {
+                                currentTooltip.remove();
+                                currentTooltip = null;
+                            }
+                        }, 150);
+                    }
+                };
+
+                document.body.addEventListener('mouseover', (this as any).pdfPillMouseOver);
+                document.body.addEventListener('mouseout', (this as any).pdfPillMouseOut);
+
+            } else {
+                new Notice("💬 Hover Mode: OFF.");
+                if (styleEl) styleEl.remove();
+                if ((this as any).pdfPillMouseOver) document.body.removeEventListener('mouseover', (this as any).pdfPillMouseOver);
+                if ((this as any).pdfPillMouseOut) document.body.removeEventListener('mouseout', (this as any).pdfPillMouseOut);
+                document.querySelectorAll('.cornell-pill-expanded').forEach(el => el.remove());
             }
         };
 
@@ -5730,22 +5956,32 @@ if (itemTemplateRaw) {
 
         pinBtn.onclick = (e) => {
             e.stopPropagation(); 
-            // 🧹 CAZAFANTASMAS 2: Destruye el tooltip instantáneamente al hacer clic
+            // 🧹 CAZAFANTASMAS: Destruye el tooltip instantáneamente al hacer clic
             document.querySelectorAll('.cornell-hover-tooltip').forEach(el => el.remove());
+            
             if (isPinboardView) {
                 this.pinboardItems.splice(pinIndex, 1);
                 this.applyFiltersAndRender();
             } else {
                 const currentPinned = this.pinboardItems.some(p => p.rawText === item.rawText && p.file.path === item.file.path);
+                
                 if (currentPinned) {
+                    // Despineamos
                     this.pinboardItems = this.pinboardItems.filter(p => !(p.rawText === item.rawText && p.file.path === item.file.path));
                     pinBtn.innerText = '○';
                     pinBtn.style.opacity = '0.5'; 
+                    new Notice("Removed from the board");
                 } else {
+                    // 📌 PINEAMOS
                     this.pinboardItems.push(item);
                     pinBtn.innerText = '●';
                     pinBtn.style.opacity = '1';
+                    new Notice("Added to board!");
                 }
+                
+                // 🚀 EL FIX MÁGICO: Forzamos a la barra lateral a redibujarse 
+                // para que el Board se actualice EN VIVO sin importar desde dónde hagas clic.
+                this.applyFiltersAndRender();
             }
         };
 

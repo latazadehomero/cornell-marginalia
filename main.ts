@@ -2512,7 +2512,7 @@ export class CornellNotesView extends ItemView {
                 document.body.classList.add('cornell-pdf-active-recall');
                 new Notice("🧠 Active Recall PDF: Activado (Pasa el ratón para revelar bloque completo)");
 
-                // --- 🪄 NUEVO MOTOR JS: ALGORITMO ESPACIAL CACHEADO ---
+// --- 🪄 NUEVO MOTOR JS: ALGORITMO ESPACIAL CACHEADO ---
                 (this as any).pdfHoverSync = (e: MouseEvent) => {
                     const target = e.target as HTMLElement;
                     if (!target || !target.matches) return;
@@ -2529,16 +2529,29 @@ export class CornellNotesView extends ItemView {
                         target.classList.add('cornell-reveal-sync');
                         currentSyncChain.push(target);
 
-                        // Escudo Anti-Crop
-                        if (target.classList.contains('rect-highlight') || target.closest('.pdf-cropped-embed') || target.tagName.toLowerCase() === 'img') {
+                        // 🛑 ESCUDO ANTI-CROP DEFINITIVO (Heurística de Altura)
+                        // Si la caja mide más de 32px de alto, es un recorte de imagen. Cortamos la cadena aquí.
+                        const isCrop = target.classList.contains('rect-highlight') || 
+                                       target.closest('.pdf-cropped-embed') || 
+                                       target.tagName.toLowerCase() === 'img' ||
+                                       (target.classList.contains('pdf-plus-backlink') && target.getBoundingClientRect().height > 32);
+
+                        if (isCrop) {
                             return; 
                         }
 
                         const page = target.closest('.page, .markdown-preview-view');
                         if (!page) return;
 
+                        // 🧹 FILTRO: Agarramos solo las líneas de texto. 
+                        // Ignoramos a los demás crops de la página para no saltar hacia ellos accidentalmente.
                         const allHighlights = Array.from(page.querySelectorAll('.pdf-plus-backlink, .pdf-highlight, .textLayer .highlight, .annotationLayer .highlight'))
-                            .filter(el => !el.classList.contains('rect-highlight') && !el.closest('.pdf-cropped-embed'));
+                            .filter(el => {
+                                const elIsCrop = el.classList.contains('rect-highlight') || 
+                                                 el.closest('.pdf-cropped-embed') ||
+                                                 (el.classList.contains('pdf-plus-backlink') && el.getBoundingClientRect().height > 32);
+                                return !elIsCrop;
+                            });
                         
                         const targetIdx = allHighlights.indexOf(target);
                         if (targetIdx === -1) return;

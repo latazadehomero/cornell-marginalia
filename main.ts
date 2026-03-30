@@ -13,6 +13,8 @@ import { MargidoroAddon } from "./addons/margidoro";
 import { AnkiSyncAddon } from "./addons/AnkiSyncAddon";
 import { ZoomDoodleAddon } from "./addons/ZoomDoodleAddon"; 
 import { DashboardAddon } from "./addons/DashboardAddon";
+import { PinboardAddon } from "./addons/PinboardAddon";
+import { PinboardView, PINBOARD_VIEW_TYPE } from "./addons/PinboardView";
 
 // =================================================================
 // 🛡️ UTILIDADES DE SEGURIDAD (SANITIZACIÓN)
@@ -191,6 +193,26 @@ export class TagSuggester {
         this.suggestEl.empty();
     }
 }
+// lienzo nativo
+// En tu archivo de tipos/settings
+export interface PinboardNode {
+    id: string;          // El blockId de la marginalia
+    x: number;           // Coordenada X en el lienzo
+    y: number;           // Coordenada Y en el lienzo
+    color: string;       // Color del tag
+    text: string;        // El contenido resumido
+    filePath: string;    // De dónde viene
+}
+
+export interface PinboardStitch {
+    sourceId: string;
+    targetId: string;
+    label: string;       // Ej: "miden lo mismo"
+}
+
+// Dentro de tu interface principal de settings (ej. CornellSettings)
+// pinboardNodes: Record<string, PinboardNode>; 
+// pinboardStitches: PinboardStitch[];
 
 // =================================================================
 // 🧠 EL CEREBRO PÚBLICO: OMNI CAPTURE MANAGER
@@ -472,6 +494,7 @@ export interface SemanticTreeNode {
 
 interface CornellSettings {
     pinnedThreads: string[];
+    enableSemanticStitching: boolean;
     exportCleanTags: boolean;
     exportCleanIds: boolean;
     dragDropTemplate: string;
@@ -497,6 +520,8 @@ interface CornellSettings {
     doodleFolder: string;
     canvasFolder: string;
     pinboardFolder: string;
+    pinboardNodes: Record<string, any>;
+    pinboardStitches: any[];
     pinboardTemplatePath: string;
     pinboardItemTemplatePath: string;
     canvasItemTemplatePath: string;
@@ -540,6 +565,8 @@ interface MarginaliaItem {
     line: number;
     blockId: string | null;
     outgoingLinks: string[];
+    //  NUEVA PROPIEDAD: Almacenará el destino y la razón del "cosido"
+    semanticStitches?: { target: string, reason: string }[];
     isTitle?: boolean;
     isCustom?: boolean;
     indentLevel?: number;
@@ -559,6 +586,7 @@ const DEFAULT_SETTINGS: CornellSettings = {
     pinnedThreads: [],
     structuralColors: [],
     ignoredFolders: 'Templates',
+    enableSemanticStitching: false,
     alignment: 'left', 
     marginWidth: 25,
     marginOffset: 20,
@@ -584,6 +612,8 @@ const DEFAULT_SETTINGS: CornellSettings = {
     doodleFolder: 'Marginalia Attachments',
     canvasFolder: 'Evidence Boards',
     pinboardFolder: 'Pinboards',
+    pinboardNodes: {},
+    pinboardStitches: [],
     pinboardTemplatePath: '',
     pinboardItemTemplatePath: '',
     canvasItemTemplatePath: '',
@@ -968,6 +998,59 @@ if (isCode && !isCornellBlock) continue;
 });
 
 export const CORNELL_VIEW_TYPE = "cornell-marginalia-view";
+
+// --- MODAL DE COSIDO SEMÁNTICO ---
+class SemanticStitchModal extends Modal {
+    sourceName: string;
+    targetName: string;
+    onSubmit: (reason: string) => void;
+
+    constructor(app: App, sourceName: string, targetName: string, onSubmit: (reason: string) => void) {
+        super(app);
+        this.sourceName = sourceName;
+        this.targetName = targetName;
+        this.onSubmit = onSubmit;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        
+        contentEl.createEl("h2", { text: "🔗 Semantic Connection" });
+        contentEl.createEl("p", { 
+            text: `How is "${this.sourceName}" related to "${this.targetName}"?`,
+            attr: { style: "color: var(--text-muted); font-size: 0.9em;" }
+        });
+        
+        const inputEl = contentEl.createEl("input", { type: "text", placeholder: "e.g., miden lo mismo (Leave empty for classic stitch)" });
+        inputEl.style.width = "100%";
+        inputEl.style.marginBottom = "20px";
+
+        const btnContainer = contentEl.createDiv({ attr: { style: "display: flex; justify-content: flex-end; gap: 10px;" } });
+        
+        const cancelBtn = btnContainer.createEl("button", { text: "Cancel" });
+        cancelBtn.onclick = () => this.close();
+
+        const confirmBtn = btnContainer.createEl("button", { text: "Stitch Notes", cls: "mod-cta" });
+        confirmBtn.style.backgroundColor = "var(--interactive-accent)";
+        confirmBtn.style.color = "var(--text-on-accent)";
+        
+        confirmBtn.onclick = () => {
+            this.onSubmit(inputEl.value.trim());
+            this.close();
+        };
+
+        // UX: Enter para guardar
+        inputEl.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") confirmBtn.click();
+        });
+        setTimeout(() => inputEl.focus(), 50);
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
 
 // --- MODAL DE ADVERTENCIA NATIVO (Anti-Congelamientos) ---
 class ConfirmStitchModal extends Modal {
@@ -1877,6 +1960,9 @@ export class CornellNotesView extends ItemView {
     // ⚡ NUEVO: Memoria para el Filtro de Flashcards
     isFlashcardFilterActive: boolean = false;
 
+    // 📍 NUEVO: Memoria para el filtro de Hilos Locales (Solo Nota Actual)
+    isLocalThreadsActive: boolean = false;
+
     // 🚀 NUEVA MEMORIA RAM (Caché de Bóveda)
     private vaultCache: Map<string, { mtime: number, items: MarginaliaItem[] }> = new Map();
 
@@ -2477,6 +2563,39 @@ export class CornellNotesView extends ItemView {
             
             flashcardFilterBtn.style.backgroundColor = this.isFlashcardFilterActive ? 'var(--interactive-accent)' : 'transparent';
             flashcardFilterBtn.style.color = this.isFlashcardFilterActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+            
+            this.applyFiltersAndRender(); 
+        };
+        // 📍 4. NUEVO BOTÓN: HILOS LOCALES (Solo visible en Threads)
+        const localThreadsBtn = pillsContainer.createEl('span', { cls: 'cornell-color-pill', title: "Filtrar hilos de la nota actual" });
+        
+        localThreadsBtn.style.backgroundColor = this.isLocalThreadsActive ? 'var(--interactive-accent)' : 'transparent';
+        localThreadsBtn.style.border = '1px solid var(--background-modifier-border)';
+        localThreadsBtn.style.color = this.isLocalThreadsActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
+        localThreadsBtn.style.cursor = 'pointer';
+        localThreadsBtn.style.position = 'relative';
+        
+        // 👁️ La magia condicional: Solo existe visualmente si estamos en 'threads'
+        localThreadsBtn.style.display = this.currentTab === 'threads' ? 'inline-block' : 'none';
+
+        setIcon(localThreadsBtn, 'file-symlink'); 
+        
+        const ltSvg = localThreadsBtn.querySelector('svg');
+        if (ltSvg) {
+            ltSvg.style.width = '14px'; 
+            ltSvg.style.height = '14px';
+            ltSvg.style.strokeWidth = '2.2';
+            ltSvg.style.position = 'absolute';
+            ltSvg.style.top = '50%'; 
+            ltSvg.style.left = '50%';
+            ltSvg.style.transform = 'translate(-50%, -50%)';
+        }
+
+        localThreadsBtn.onclick = () => {
+            this.isLocalThreadsActive = !this.isLocalThreadsActive;
+            
+            localThreadsBtn.style.backgroundColor = this.isLocalThreadsActive ? 'var(--interactive-accent)' : 'transparent';
+            localThreadsBtn.style.color = this.isLocalThreadsActive ? 'var(--text-on-accent)' : 'var(--text-muted)';
             
             this.applyFiltersAndRender(); 
         };
@@ -3360,8 +3479,9 @@ export class CornellNotesView extends ItemView {
                     while ((match = lineRegex.exec(line)) !== null) {
                         let noteContent = match[1].trim();
 
-                        // 1. Limpieza universal del ID fantasma (para que la nueva sintaxis se vea limpia en el sidebar)
-                        let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+                        
+                        // 1. Limpieza universal de IDs fantasma (Obsidian y Anki) en cualquier parte del texto
+let tempNoteContent = noteContent.replace(/(?:\s+|^)(?:anki)?\^[a-zA-Z0-9-]+/g, '').trim();
 
                         // 2. Detección simple de Flashcard
                         if (tempNoteContent.includes(';;')) {
@@ -3382,17 +3502,37 @@ export class CornellNotesView extends ItemView {
 
                         cleanText = cleanText.replace(/img:\s*\[\[(.*?)\]\]/gi, '![[$1]]').trim();
 
-                        const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
+                        // 🛡️ NUEVO CAZADOR DE ENLACES SEMÁNTICOS (Preserva tu lógica original)
+                        const linkRegex = /(?<!!)\[\[(.*?)\]\](?:\s*\{stitch:\s*([^}]+)\})?/g;
+                        
                         const outgoingLinks: string[] = [];
+                        const semanticStitches: { target: string, reason: string }[] = []; // 👈 NUEVA MEMORIA
+                        
                         const linkMatches = Array.from(cleanText.matchAll(linkRegex));
-                        linkMatches.forEach(m => outgoingLinks.push(m[1]));
+                        linkMatches.forEach(m => {
+                            const targetLink = m[1];
+                            const stitchReason = m[2] || null;
+
+                            // 1. Alimentamos el array original para que los demás addons no se rompan
+                            outgoingLinks.push(targetLink);
+
+                            // 2. Si hay una razón semántica, la guardamos
+                            if (stitchReason) {
+                                semanticStitches.push({
+                                    target: targetLink,
+                                    reason: stitchReason.trim()
+                                });
+                            }
+                        });
+                        
                         cleanText = cleanText.replace(linkRegex, '').trim();
 
                         if (cleanText.length === 0) continue;
 
-                        // 🛡️ ESCÁNER UNIVERSAL DE IDs: Atrapa tanto la vieja sintaxis (afuera) como la nueva (adentro)
-                        const blockIdMatch = line.match(/\^([a-zA-Z0-9]+)(?:\s*%%)?\s*$/);
-                        const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
+                        // 🛡️ ESCÁNER UNIVERSAL DE IDs (BLINDADO): Atrapa el ID nativo de Obsidian ignorando los de Anki
+// Busca un espacio (o inicio) seguido de ^ y letras/números, sin importar qué haya después.
+const blockIdMatch = line.match(/(?:^|\s)\^([a-zA-Z0-9]+)/);
+const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
 
                        // 🕵️‍♂️ PRE-CALCULAR CITATION (CONTEXTO) PARA MEMORIA RAM
                         let startLine = i;
@@ -3444,6 +3584,7 @@ export class CornellNotesView extends ItemView {
                             line: i,
                             blockId: existingBlockId,
                             outgoingLinks: outgoingLinks,
+                            semanticStitches: semanticStitches, // 👈 INYECTAMOS LA MEMORIA AQUÍ
                             context: finalContext // 👈 Contexto perfecto, respeta los saltos de línea.
                         });
                     }
@@ -3489,13 +3630,20 @@ export class CornellNotesView extends ItemView {
             return;
         }
 
-        const isFilterActive = this.searchQuery.length > 0 || this.activeColorFilters.size > 0 || this.isFlashcardFilterActive;
+        // 🧠 Instanciamos el archivo activo para compararlo
+        const activeFile = this.plugin.app.workspace.getActiveFile();
+
+        const isFilterActive = this.searchQuery.length > 0 || this.activeColorFilters.size > 0 || this.isFlashcardFilterActive || this.isLocalThreadsActive;
 
         const matchesFilter = (item: MarginaliaItem) => {
             const matchesSearch = item.text.toLowerCase().includes(this.searchQuery) || item.file.basename.toLowerCase().includes(this.searchQuery);
             const matchesColor = this.activeColorFilters.size === 0 || this.activeColorFilters.has(item.color);
             const matchesFlashcard = !this.isFlashcardFilterActive || item.rawText.includes(';;');
-            return matchesSearch && matchesColor && matchesFlashcard;
+            
+            // 📍 LÓGICA DE HILOS LOCALES
+            const matchesLocal = !this.isLocalThreadsActive || (activeFile && item.file && item.file.path === activeFile.path);
+
+            return matchesSearch && matchesColor && matchesFlashcard && matchesLocal;
         };
 
        if (this.currentTab === 'threads') {
@@ -4773,6 +4921,16 @@ if (itemTemplateRaw) {
 
             headerDiv.setAttr('draggable', 'true');
             headerDiv.addEventListener('dragstart', (event: DragEvent) => {
+                event.stopPropagation(); //  Agregamos esto por seguridad para evitar arrastres fantasma
+                //  LIENZO: Avisamos que es un grupo
+                // @ts-ignore
+                window.OmniDragManager = {
+                    payload: {
+                        type: 'group',
+                        title: representativeItem.text,
+                        items: items // La lista de marginalias hijas
+                    }
+                };
                 if (!event.dataTransfer) return;
                 event.dataTransfer.effectAllowed = 'copy'; 
                 let targetId = representativeItem.blockId;
@@ -4791,6 +4949,10 @@ if (itemTemplateRaw) {
                 this.draggedSidebarItems = null; 
                 headerDiv.removeClass('cornell-drop-target');
                 this.triggerTemplaterAfterDrop();
+
+                // Limpiamos la memoria del lienzo
+                // @ts-ignore
+                window.OmniDragManager = { payload: null };
             });
 
             headerDiv.addEventListener('dragenter', (e: DragEvent) => {
@@ -5389,6 +5551,24 @@ if (itemTemplateRaw) {
         groupEl.addEventListener('dragstart', (e: DragEvent) => {
             if (!e.dataTransfer) return;
             e.stopPropagation(); 
+            
+            // 🧠 MOTOR RECURSIVO: Extraer todos los items de este nodo y sus hijos
+            const allItemsInTree: MarginaliaItem[] = [];
+            const extractItems = (currentNode: SemanticTreeNode) => {
+                allItemsInTree.push(...currentNode.items);
+                currentNode.children.forEach(child => extractItems(child));
+            };
+            extractItems(node);
+
+            // 👇 INYECCIÓN PARA EL LIENZO: Avisamos que es un grupo con todos sus items
+            // @ts-ignore
+            window.OmniDragManager = {
+                payload: {
+                    type: 'group',
+                    title: node.name.toUpperCase(),
+                    items: allItemsInTree // 👈 AHORA SÍ VAN TODAS LAS MARGINALIAS
+                }
+            };
 
             e.dataTransfer.setData('application/cornell-semantic-path', node.fullPath);
             const isMajor = node.children.size > 0 ? 'true' : 'false';
@@ -5401,7 +5581,7 @@ if (itemTemplateRaw) {
                 const headingLevel = '#'.repeat(currentDepth + 1); 
                 dropText += `${headingLevel} ${currentNode.name.toUpperCase()}\n\n`;
                 
-                const includeChildren = this.currentTab === 'threads'; // 🧠 INTELIGENCIA CONTEXTUAL
+                const includeChildren = this.currentTab === 'threads'; 
 
                 for (const item of currentNode.items) {
                     dropText += this.buildThreadDropText(item, 0, new Set<string>(), rootTitle, includeChildren);
@@ -5413,20 +5593,21 @@ if (itemTemplateRaw) {
             buildDropText(node, 0);
 
             e.dataTransfer.setData('text/plain', dropText.trim());
-            CornellNotesView.lastDraggedPayload = dropText.trim(); //  EL RECUADRO EN MEMORIA!
+            CornellNotesView.lastDraggedPayload = dropText.trim(); 
             e.dataTransfer.effectAllowed = 'copyMove';
             
             setTimeout(() => groupEl.style.opacity = '0.5', 0);
         });
 
         groupEl.addEventListener('dragend', (e: DragEvent) => {
-    e.stopPropagation();
-    groupEl.style.opacity = '1';
-    this.triggerTemplaterAfterDrop();
+            e.stopPropagation();
+            groupEl.style.opacity = '1';
+            this.triggerTemplaterAfterDrop();
 
-    // ⚡ INVOCAMOS AL NUEVO MOTOR
-    
-});
+    //  Limpiamos la memoria global para que no afecte futuros arrastres
+            // @ts-ignore
+            window.OmniDragManager = { payload: null };
+        });
 
         groupEl.addEventListener('dragover', (e: DragEvent) => {
             e.preventDefault();
@@ -5554,10 +5735,40 @@ if (itemTemplateRaw) {
             for (const linkStr of item.outgoingLinks) {
                 const parts = linkStr.split('#^');
                 if (parts.length === 2) {
-                    const targetId = parts[1];
+                    const targetId = parts[1].split('|')[0].trim(); // 🛡️ Blindaje extra contra alias accidentales
                     const childItem = allItems.find(i => i.blockId === targetId);
                     
                     if (childItem) {
+                        // 👇 NUEVO MOTOR VISUAL: Dibujamos la Píldora Semántica si existe
+                        const semanticData = item.semanticStitches?.find(s => s.target === linkStr);
+                        
+                        if (semanticData && semanticData.reason) {
+                            const reasonPill = childrenContainer.createDiv({ cls: 'cornell-semantic-pill' });
+                            
+                            // 🎨 Estilos en línea para un despliegue instantáneo (Vibe Coding puro)
+                            reasonPill.style.fontSize = "0.82em";
+                            reasonPill.style.color = "var(--text-muted)";
+                            reasonPill.style.padding = "2px 8px";
+                            reasonPill.style.marginLeft = "16px"; // Alineado con la sangría del árbol
+                            reasonPill.style.borderLeft = "2px solid var(--interactive-accent)";
+                            reasonPill.style.backgroundColor = "var(--background-secondary)";
+                            reasonPill.style.borderBottomRightRadius = "4px";
+                            reasonPill.style.borderTopRightRadius = "4px";
+                            reasonPill.style.marginBottom = "4px";
+                            reasonPill.style.marginTop = "2px";
+                            reasonPill.style.display = "inline-flex";
+                            reasonPill.style.alignItems = "center";
+                            reasonPill.style.gap = "6px";
+                            
+                            // 🛡️ CÓDIGO SEGURO: Usamos la API de Obsidian para escapar cualquier tag HTML malicioso
+const iconSpan = reasonPill.createSpan({ text: '🔗 ' });
+iconSpan.style.fontSize = "0.9em";
+iconSpan.style.opacity = "0.7";
+
+reasonPill.createEl('i', { text: semanticData.reason });
+                        }
+
+                        // 🌳 Renderizamos al hijo normalmente debajo de la píldora
                         this.renderThreadNode(childItem, childrenContainer, allItems, newVisited, isFilteredMode, false);
                     } else {
                         const brokenDiv = childrenContainer.createDiv({ cls: 'cornell-sidebar-item' });
@@ -5999,10 +6210,28 @@ if (itemTemplateRaw) {
                         new Notice("Cannot connect a note to itself.");
                         return;
                     }
-                    await this.executeMassStitch([this.sourceStitchItem], [item]);
-                    this.isStitchingMode = false;
-                    this.sourceStitchItem = null;
-                    this.updateStitchBanner();
+                    
+                    const finishStitch = () => {
+                        this.isStitchingMode = false;
+                        this.sourceStitchItem = null;
+                        this.updateStitchBanner();
+                    };
+
+                    // 🧠 DECISIÓN UX: ¿Invocamos el modal semántico o lo hacemos clásico?
+                    if (this.plugin.settings.enableSemanticStitching) {
+                        new SemanticStitchModal(
+                            this.plugin.app, 
+                            this.sourceStitchItem.file.basename, 
+                            item.file.basename, 
+                            async (reason) => {
+                                await this.executeMassStitch([this.sourceStitchItem!], [item], reason);
+                                finishStitch();
+                            }
+                        ).open();
+                    } else {
+                        await this.executeMassStitch([this.sourceStitchItem], [item]);
+                        finishStitch();
+                    }
                 }
                 return;
             }
@@ -6218,6 +6447,9 @@ header.createEl('span', {
                 document.querySelectorAll('.hover-popover').forEach(el => el.remove());
                 if (!event.dataTransfer) return;
                 event.dataTransfer.effectAllowed = 'copy'; 
+
+                // @ts-ignore
+    window.OmniDragManager = { payload: item };
                 
                 let targetId = item.blockId;
                 if (!targetId) {
@@ -6263,6 +6495,9 @@ header.createEl('span', {
                 this.draggedSidebarItems = null; 
                 itemDiv.removeClass('cornell-drop-target');
                 this.triggerTemplaterAfterDrop();
+
+                // @ts-ignore
+    window.OmniDragManager = { payload: null };
 
                 // ⚡ INVOCAMOS AL NUEVO MOTOR
     
@@ -6534,7 +6769,7 @@ header.createEl('span', {
         new Notice(`✅ Súper-recuadro #${newParentName} creado. (Press Ctrl+Shift+Z to Undo)`);
         await this.scanNotes();
     }
-async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
+async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[], semanticReason?: string) {
         const totalLinks = sources.length * targets.length;
         
         // 🧠 Encapsulamos la lógica de costura pura
@@ -6553,8 +6788,12 @@ async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
                 let linksToInject = "";
                 for (const target of targets) {
                     if (source === target) continue; 
-                    linksToInject += ` [[${target.file.basename}#^${target.blockId}]]`;
+                    
+                    // 🪄 AQUÍ ESTÁ LA MAGIA SEMÁNTICA
+                    const reasonString = semanticReason ? ` {stitch: ${semanticReason}}` : "";
+                    linksToInject += ` [[${target.file.basename}#^${target.blockId}]]${reasonString}`;
                 }
+                
                 if (linksToInject.length > 0) {
                     let expectedNewRaw = "";
 
@@ -6574,17 +6813,15 @@ async executeMassStitch(sources: MarginaliaItem[], targets: MarginaliaItem[]) {
                         return lines.join('\n');
                     });
                     
-                    // 🧠 Guardamos el fantasma con el antes y el después
                     undoRecords.push({ file: source.file, line: source.line, oldRaw: source.rawText, newRaw: expectedNewRaw });
                 }
             }
-            this.plugin.lastStitchAction = undoRecords; // 🧠 Sellamos la memoria global
+            this.plugin.lastStitchAction = undoRecords; 
             new Notice("Threads successfully connected! ✨ (Press Ctrl+Shift+Z to Undo)");
             await this.scanNotes(); 
         };
 
-        // 🛡️ Si es masivo, abrimos el modal nativo; si es 1 a 1, lo hace directo.
-        if (totalLinks > 1) {
+        if (totalLinks > 1 && !semanticReason) { // Si ya pedimos el modal semántico, no abrumamos con otro modal
             new ConfirmStitchModal(
                 this.plugin.app, 
                 `You are about to create ${totalLinks} connections.\nThis will modify ${sources.length} note(s).\n\nAre you sure you want to proceed?`,
@@ -7139,6 +7376,16 @@ export class CornellSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings(); 
                 })
             );
+        new Setting(containerEl)
+            .setName('🔗 Semantic Stitching UI')
+            .setDesc('When connecting (stitching) notes, ask for a semantic reason (e.g. "miden lo mismo").')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableSemanticStitching)
+                .onChange(async (value) => { 
+                    this.plugin.settings.enableSemanticStitching = value; 
+                    await this.plugin.saveSettings(); 
+                })
+            );
 
         // ======================================================
         // 🧩 ADDONS & MODULES
@@ -7534,6 +7781,25 @@ export class CornellSettingTab extends PluginSettingTab {
             // Le avisamos al usuario que necesita recargar para ver el icono
             new Notice(value ? "🚀 Dashboard Activado: Por favor recarga el plugin." : "🛑 Dashboard Desactivado: Por favor recarga el plugin.");
         }));
+
+    // Lienzo
+        
+        new Setting(containerEl)
+            .setName("Cornell Board 🌌")
+            .setDesc("Activate an infinite, freeform canvas to drag, connect, and visually materialize marginalias.")
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.addons["spatial-pinboard"] || false)
+                .onChange(async (value) => {
+                    this.plugin.settings.addons["spatial-pinboard"] = value;
+                    await this.plugin.saveSettings();
+                    
+                    // Lógica para encender/apagar en tiempo real sin reiniciar Obsidian
+                    if (value) {
+                        this.plugin.pinboardAddon.load();
+                    } else {
+                        this.plugin.pinboardAddon.unload();
+                    }
+                }));
         
         }
     
@@ -9505,6 +9771,7 @@ export default class CornellMarginalia extends Plugin {
     gamificationAddon!: GamificationAddon;
     backgroundAddon!: CustomBackgroundAddon;
     rhizomeAddon!: RhizomeAddon;
+    pinboardAddon!: PinboardAddon;
     // SUPER DOODLEEEEEEEEEEEEEEEEEEE
     public superDoodleAddon!: SuperDoodleAddon;
     public blurtingAddon!: BlurtingAddon;
@@ -9681,8 +9948,38 @@ async getTemplateContent(templatePath: string, variables: Record<string, string>
 
     
 }
-        // 👆 FIN DE LA CONEXIÓN DE ADDONS
-       
+// 🌌 LIENZO ESPACIAL (PINBOARD)
+        // 1. Registramos la vista de Lienzo Espacial
+        this.registerView(PINBOARD_VIEW_TYPE, (leaf) => new PinboardView(leaf, this));
+
+        // 2. 🧹 PURGA FORZADA DE MEMORIA: Le decimos a Obsidian que suelte la extensión 
+        // por si quedó trabada por un crasheo del Hot-Reloader.
+        try {
+            // @ts-ignore (Usamos la API interna de Obsidian bajo nuestra propia responsabilidad)
+            this.app.viewRegistry.unregisterExtensions(["cboard"]);
+        } catch (e) {
+            // Ignoramos si falla
+        }
+
+        // 3. 🪄 MAGIA: Vinculamos la extensión de forma segura
+        try {
+            this.registerExtensions(["cboard"], PINBOARD_VIEW_TYPE);
+        } catch (error) {
+            console.log("La extensión .cboard sigue registrada, ignorando error para continuar la carga.");
+        }
+
+        // 4. Comando para crear un archivo nuevo
+        this.addCommand({
+            id: 'create-new-cboard',
+            name: 'Create new Canvas (.cboard)',
+            callback: async () => {
+                const fileName = `Lienzo ${window.moment().format('YYYY-MM-DD HH-mm-ss')}.cboard`;
+                const file = await this.app.vault.create(fileName, '{"nodes":{},"stitches":[]}');
+                const leaf = this.app.workspace.getLeaf(true);
+                await leaf.openFile(file);
+            }
+        });
+        // 👆 FIN DE LA CONEXIÓN DEL LIENZO
 
         this.updateStyles(); 
         this.registerView(CORNELL_VIEW_TYPE, (leaf) => new CornellNotesView(leaf, this));
@@ -9690,22 +9987,15 @@ async getTemplateContent(templatePath: string, variables: Record<string, string>
         // 🧠 MOTOR DE DRAG & DROP PARA TEMPLATER (CodeMirror 6 Nativo)
         this.registerEditorExtension(EditorView.domEventHandlers({
             drop: (event: DragEvent, view: EditorView) => {
-                // 1. Leemos el texto que estás arrastrando
                 const text = event.dataTransfer?.getData('text/plain');
-                
-                // 2. Si el texto tiene tags de Templater (<%...%>) intervenimos
                 if (text && text.includes('<%') && text.includes('%>')) {
-                    event.preventDefault(); // 🛑 Bloqueamos la caída nativa (Adiós efecto fantasma)
-
-                    // 3. Calculamos la posición exacta del mouse en el texto
+                    event.preventDefault(); 
                     const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
                     if (pos === null) return false;
-
-                    // 4. Mandamos procesar e inyectar
                     this.processTemplaterDrop(text, pos, view);
-                    return true; // Le decimos a Obsidian: "Yo me encargo"
+                    return true; 
                 }
-                return false; // Si no hay Templater, que caiga normal
+                return false; 
             }
         }));
 
@@ -9916,12 +10206,23 @@ async getTemplateContent(templatePath: string, variables: Record<string, string>
                     const targets = [view.selectedForStitch[view.selectedForStitch.length - 1]];
                     const sources = view.selectedForStitch.slice(0, -1);
                     
-                    // 🎯 AQUÍ ESTÁ LA MAGIA: Ahora sí le pasamos los 2 argumentos a la función
-                    view.executeMassStitch(sources, targets).then(() => {
-                        // Limpiamos la selección al terminar para no arrastrar fantasmas
-                        view.selectedForStitch = []; 
-                        view.applyFiltersAndRender();
-                    });
+                    // 🧠 DECISIÓN UX PARA COMANDO MASIVO
+                    if (this.settings.enableSemanticStitching) {
+                        // Modo Semántico: Preguntamos la razón
+                        new SemanticStitchModal(this.app, "Selected Notes", targets[0].file.basename, (reason) => {
+                            view.executeMassStitch(sources, targets, reason).then(() => {
+                                view.selectedForStitch = []; 
+                                view.applyFiltersAndRender();
+                            });
+                        }).open();
+                    } else {
+                        // 🎯 Modo Clásico: Cosemos directo sin preguntar
+                        view.executeMassStitch(sources, targets).then(() => {
+                            // Limpiamos la selección al terminar para no arrastrar fantasmas
+                            view.selectedForStitch = []; 
+                            view.applyFiltersAndRender();
+                        });
+                    }
                 } else {
                     new Notice("Open the Marginalia Explorer first.");
                 }
@@ -10914,6 +11215,9 @@ async processTemplaterDrop(text: string, pos: number, view: EditorView) {
                 noteText = noteText.replace(compassRegex, '').trim();
                 const threadRegex = /(?<!!)\[\[(.*?)\]\]/g;
                 noteText = noteText.replace(threadRegex, '').trim();
+                // 🧹 LIMPIEZA SEMÁNTICA: Borramos el {stitch: ...} para el PDF
+                const stitchRegex = /\{stitch:\s*[^}]+\}/g;
+                noteText = noteText.replace(stitchRegex, '').trim();
 
                 const isMainLeft = this.settings.alignment === 'left';
                 const textAlign = isMainLeft ? 'right' : 'left';
@@ -11021,11 +11325,13 @@ ${secondCol}
                     return '';
                 });
 
-                // 🧭 LIMPIEZA DE BRÚJULA E HILOS
+                // 🧭 LIMPIEZA DE BRÚJULA, HILOS Y STITCHES
                 const compassRegex = /\[(North|South|East|West)::\s*\[\[([\s\S]*?)\]\]\]/gi;
                 noteText = noteText.replace(compassRegex, '').trim();
                 const threadRegex = /(?<!!)\[\[(.*?)\]\]/g;
                 noteText = noteText.replace(threadRegex, '').trim();
+                const stitchRegex = /\{stitch:\s*[^}]+\}/g;
+                noteText = noteText.replace(stitchRegex, '').trim();
 
                 const borderStyle = direction === '>' ? `border-right: 3px solid ${matchedColor};` : `border-left: 3px solid ${matchedColor};`;
 

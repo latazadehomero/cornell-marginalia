@@ -325,6 +325,14 @@ export class PinboardView extends TextFileView {
 
     // 📥 Obsidian llama a esto cuando necesita guardar el archivo
     getViewData(): string {
+        // 🛡️ SEGURO DE VIDA: Si cerramos el archivo mientras hay un dibujo en segundo plano 
+        // pendiente de guardarse, lo forzamos inmediatamente antes de que Obsidian lo cierre.
+        if (this.saveDoodleTimeout && this.doodleCanvasEl) {
+            clearTimeout(this.saveDoodleTimeout);
+            this.saveDoodleTimeout = null;
+            this.canvasData.doodleDataUrl = this.doodleCanvasEl.toDataURL("image/png");
+        }
+        
         return JSON.stringify(this.canvasData, null, 2);
     }
 
@@ -373,6 +381,22 @@ export class PinboardView extends TextFileView {
         }
         if (this.svgOverlay) this.svgOverlay.innerHTML = '';
         if (this.doodleCtx) this.doodleCtx.clearRect(0, 0, 5000, 5000); // 👈 Limpiamos el cristal de dibujo
+    }
+
+    // 🚀 MOTOR DE GUARDADO SIN LAG (Segundo plano)
+    saveCanvasInBg() {
+        if (!this.doodleCanvasEl) return;
+        
+        // toBlob trabaja en un hilo de fondo, liberando la pantalla instantáneamente
+        this.doodleCanvasEl.toBlob((blob) => {
+            if (!blob) return;
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                this.canvasData.doodleDataUrl = reader.result as string;
+                this.requestSave(); // Guardamos en el disco de forma segura
+            };
+            reader.readAsDataURL(blob);
+        }, "image/png");
     }
 
     // 🧹 NUEVO MOTOR DE LIMPIEZA TOTAL
@@ -817,6 +841,64 @@ export class PinboardView extends TextFileView {
             }
         });
     }
+    // ✂️ MOTOR DE RECORTES (Protegido contra pérdida de GPU)
+    extractDoodleToCard(box: {left: number, top: number, right: number, bottom: number}): string | null {
+        if (!this.doodleCtx || !this.doodleCanvasEl) return null;
+
+        const width = box.right - box.left;
+        const height = box.bottom - box.top;
+
+        if (width <= 0 || height <= 0) return null;
+
+        // 1. EL ESCUDO: Creamos el lienzo temporal pequeño
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = width;
+        tempCanvas.height = height;
+        const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true })!;
+
+        // 2. 🛡️ Copiamos usando drawImage (Esto evita que Chrome apague la tarjeta gráfica)
+        tempCtx.drawImage(
+            this.doodleCanvasEl, 
+            box.left, box.top, width, height, // Origen
+            0, 0, width, height               // Destino
+        );
+
+        // 3. Extraemos los píxeles DEL TEMPORAL para buscar tinta
+        const imgData = tempCtx.getImageData(0, 0, width, height);
+        let hasInk = false;
+        for (let i = 3; i < imgData.data.length; i += 4) {
+            if (imgData.data[i] > 0) { 
+                hasInk = true;
+                break;
+            }
+        }
+
+        if (!hasInk) return null;
+
+        // 4. ¡TIJERAS! Borramos esa zona del lienzo principal
+        this.doodleCtx.clearRect(box.left, box.top, width, height);
+        
+        // 5. Disparamos el guardado inteligente sin trabar nada
+        this.triggerSmartSave();
+
+        const dataUrl = tempCanvas.toDataURL("image/png");
+
+        // 6. Creamos una tarjeta "Sticker"
+        const nodeId = `sticker-${Date.now()}`;
+        const item = {
+            text: ``, 
+            color: 'transparent',
+            file: null,
+            isCustomText: false,
+            isDoodleCut: true,
+            doodleImg: dataUrl
+        };
+
+        this.saveNodeToSettings(nodeId, item, box.left, box.top);
+        this.drawNode(nodeId, item, box.left, box.top);
+        
+        return nodeId;
+    }
 
     // 🔲 LÓGICA DE DIBUJO DEL RECTÁNGULO DE SELECCIÓN
     setupMarqueeSelection() {
@@ -865,14 +947,18 @@ export class PinboardView extends TextFileView {
         });
 
         this.canvasEl.addEventListener('mouseup', () => {
+            // 👇 Restauramos la solidez del cristal si usaste Ctrl+Clic
+            if (this.currentTool !== 'hand' && this.doodleCanvasEl) {
+                this.doodleCanvasEl.style.pointerEvents = 'auto';
+            }
+
             if (!this.isSelecting) return;
             this.isSelecting = false;
             this.selectionBoxEl.style.display = 'none';
 
-            // Evitamos selecciones fantasma si fue solo un clic normal al fondo
             if (parseFloat(this.selectionBoxEl.style.width) < 5) return;
 
-            // 💥 CALCULAR COLISIONES (AABB Bounding Box)
+            // 💥 CALCULAR COLISIONES
             const box = {
                 left: parseFloat(this.selectionBoxEl.style.left),
                 top: parseFloat(this.selectionBoxEl.style.top),
@@ -880,18 +966,26 @@ export class PinboardView extends TextFileView {
                 bottom: parseFloat(this.selectionBoxEl.style.top) + parseFloat(this.selectionBoxEl.style.height)
             };
 
+            // ✂️ MAGIA NUEVA: ¡Recortar el dibujo del fondo si hay tinta!
+            const newStickerId = this.extractDoodleToCard(box);
+            if (newStickerId) {
+                // Si creamos un sticker, lo seleccionamos automáticamente para que se mueva con el ratón
+                const stickerEl = document.getElementById(newStickerId);
+                if (stickerEl) this.selectNode(newStickerId, stickerEl);
+            }
+
+            // Seleccionar las tarjetas normales
             const nodes = this.canvasEl.querySelectorAll('.cornell-pinboard-node');
-            
-            // 👇 SOLUCIÓN TYPESCRIPT: Recibimos un 'Element' y lo casteamos a 'HTMLElement'
             nodes.forEach((el: Element) => {
                 const node = el as HTMLElement; 
-                
+                // Evitamos seleccionar el sticker recién creado (ya lo seleccionamos arriba)
+                if (node.id === newStickerId) return; 
+
                 const n = {
                     left: node.offsetLeft, top: node.offsetTop,
                     right: node.offsetLeft + node.offsetWidth, bottom: node.offsetTop + node.offsetHeight
                 };
 
-                // Si se tocan, lo añadimos al grupo
                 if (!(box.right < n.left || box.left > n.right || box.bottom < n.top || box.top > n.bottom)) {
                     this.selectNode(node.id, node);
                 }
@@ -900,12 +994,36 @@ export class PinboardView extends TextFileView {
     }
 
     clearSelection() {
-        this.selectedNodes.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.style.boxShadow = '0 4px 10px rgba(0,0,0,0.15)'; // Sombra original
-        });
-        this.selectedNodes.clear();
-    }
+        this.selectedNodes.forEach(id => {
+            const el = document.getElementById(id);
+            const nData = this.canvasData.nodes[id];
+            
+            // 💥 SI ES UN DIBUJO (STICKER): Lo estampamos de vuelta al lienzo
+            if (nData && nData.isDoodleCut) {
+                if (this.doodleCtx && this.doodleCanvasEl) {
+                    const img = new Image();
+                    img.onload = () => {
+                        // 1. Lo dibujamos de vuelta en su nueva posición
+                        this.doodleCtx.drawImage(img, nData.x, nData.y);
+                        
+                        // 2. AHORA SÍ, destruimos la memoria de la tarjeta temporal (NUNCA ANTES)
+                        if (el) el.remove();
+                        delete this.canvasData.nodes[id];
+                        
+                        // 3. Solicitamos el guardado de fondo
+                        this.triggerSmartSave();
+                        this.requestSave(); // Le avisa a Obsidian que borramos un nodo
+                    };
+                    img.src = nData.doodleImg;
+                }
+            } else if (el) {
+                // 📚 SI ES UNA NOTA NORMAL: Solo le quitamos el resplandor azul de selección
+                el.style.boxShadow = '0 4px 10px rgba(0,0,0,0.15)'; 
+            }
+        });
+        
+        this.selectedNodes.clear();
+    }
 
     // ⌨️ MOTOR DE ATAJOS DE TECLADO
     setupKeyboardShortcuts() {
@@ -956,7 +1074,12 @@ export class PinboardView extends TextFileView {
 
     selectNode(id: string, el: HTMLElement) {
         this.selectedNodes.add(id);
-        el.style.boxShadow = '0 0 0 4px var(--color-blue)'; // Resplandor de selección
+        
+        // 🥷 Si es un recorte de dibujo, lo dejamos 100% invisible (sin aura)
+        const nodeData = this.canvasData.nodes[id];
+        if (!nodeData || !nodeData.isDoodleCut) {
+            el.style.boxShadow = '0 0 0 4px var(--color-blue)'; // Resplandor de selección
+        }
     }
 
     // 🔲 MOTOR DE SELECCIÓN MÚLTIPLE
@@ -1064,312 +1187,314 @@ export class PinboardView extends TextFileView {
     }
 
     // 🎨 RENDERIZADO FÍSICO DE LA TARJETA
-    drawNode(nodeId: string, item: any, x: number, y: number) {
+    drawNode(nodeId: string, item: any, x: number, y: number) {
 
-        const existingNode = this.canvasEl.querySelector(`#${nodeId}`) as HTMLElement;
-        if (existingNode) {
-            // Si la tarjeta ya existe en el lienzo, abortamos su creación.
-            // Solo actualizamos su posición (útil para cuando sincronizas entre dispositivos)
-            if (existingNode.style.cursor !== 'grabbing') {
-                existingNode.style.left = `${x}px`;
-                existingNode.style.top = `${y}px`;
+        const existingNode = this.canvasEl.querySelector(`#${nodeId}`) as HTMLElement;
+        if (existingNode) {
+            // Si la tarjeta ya existe en el lienzo, abortamos su creación.
+            if (existingNode.style.cursor !== 'grabbing') {
+                existingNode.style.left = `${x}px`;
+                existingNode.style.top = `${y}px`;
+            }
+            return; 
+        }
+
+        const node = this.canvasEl.createDiv({ cls: 'cornell-pinboard-node' });
+        node.id = nodeId;
+        node.style.position = 'absolute';
+        node.style.left = `${x}px`;
+        node.style.top = `${y}px`;
+        node.style.zIndex = '10';
+
+        // 🔮 AISLAMOS LA LÓGICA: ¿Es un dibujo libre o una tarjeta normal?
+        if (item.isDoodleCut && item.doodleImg) {
+            
+            // 🥷 MODO STICKER INVISIBLE: Exactamente como MS Paint
+            const img = node.createEl('img', { attr: { src: item.doodleImg } });
+            img.style.display = 'block';
+            img.style.width = '100%';
+            img.style.height = '100%';
+            img.style.pointerEvents = 'none'; // Para que el ratón no se trabe
+
+            // Limpiamos cualquier estilo de tarjeta
+            node.style.backgroundColor = 'transparent';
+            node.style.border = 'none';
+            node.style.boxShadow = 'none';
+            node.style.minWidth = 'unset'; 
+            node.style.width = 'fit-content';
+            node.style.padding = '0px';
+
+        } else {
+            
+            // 📚 COMPORTAMIENTO NORMAL: Para notas de texto y recortes de PDF++
+            node.style.minWidth = '300px';
+            node.style.width = 'fit-content';
+            node.style.maxWidth = '800px';
+            node.style.padding = '12px';
+            node.style.backgroundColor = 'var(--background-primary)'; 
+            node.style.border = '1px solid var(--background-modifier-border)';
+            node.style.borderLeft = `4px solid ${item.color || 'var(--text-accent)'}`;
+            node.style.borderRadius = '6px';
+            node.style.boxShadow = '0 4px 10px rgba(0,0,0,0.15)';
+
+            const markdownContainer = node.createDiv({ cls: 'cornell-pinboard-markdown markdown-rendered markdown-preview-view markdown-reading-view' });
+            markdownContainer.style.maxHeight = '400px'; 
+            markdownContainer.style.overflowY = 'auto';
+            markdownContainer.style.overflowX = 'hidden';
+
+            let cleanText = (item.text || "").replace(/%%[\s\S]*?%%/g, '').trim();
+            cleanText += "\n"; 
+
+            MarkdownRenderer.render(
+                this.plugin.app,
+                cleanText,
+                markdownContainer,
+                item.file?.path || "",
+                this
+            ).then(() => {
+                setTimeout(() => {
+                    markdownContainer.querySelectorAll('img, .pdf-cropped-embed, .internal-embed').forEach(el => {
+                        const htmlEl = el as HTMLElement;
+                        htmlEl.style.maxWidth = '750px';
+                        htmlEl.style.height = 'auto';
+                        htmlEl.style.borderRadius = '4px';
+                        htmlEl.style.display = 'block';
+                    });
+                }, 100);
+            });
+
+            // --- Metadatos y Modo Edición ---
+            if (item.file) {
+                const meta = node.createDiv({ text: `📄 ${item.file.basename}` });
+                meta.style.fontSize = '0.8em';
+                meta.style.color = 'var(--text-muted)';
+                meta.style.marginTop = '8px';
+                meta.style.borderTop = '1px dashed var(--background-modifier-border)';
+                meta.style.paddingTop = '4px';
+            } else if (item.isCustomText) {
+                const meta = node.createDiv({ text: `✏️ Doble clic para editar` });
+                meta.style.fontSize = '0.8em';
+                meta.style.color = 'var(--text-muted)';
+                meta.style.marginTop = '8px';
+                meta.style.borderTop = '1px dashed var(--background-modifier-border)';
+                meta.style.paddingTop = '4px';
+
+                // ✏️ LÓGICA DE DOBLE CLIC PARA EDITAR
+                node.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
+                    if (node.querySelector('textarea')) return; 
+
+                    markdownContainer.style.display = 'none'; 
+                    
+                    const textarea = node.createEl('textarea');
+                    textarea.value = item.text || "";
+                    textarea.style.width = '100%';
+                    textarea.style.minHeight = '150px';
+                    textarea.style.background = 'transparent';
+                    textarea.style.color = 'var(--text-normal)';
+                    textarea.style.border = '1px solid var(--interactive-accent)';
+                    textarea.style.borderRadius = '4px';
+                    textarea.style.padding = '8px';
+                    textarea.style.resize = 'vertical';
+                    textarea.style.fontFamily = 'inherit';
+                    textarea.style.fontSize = 'inherit';
+                    
+                    textarea.focus();
+
+                    const saveEdit = () => {
+                        const newText = textarea.value;
+                        item.text = newText;
+                        
+                        if (this.canvasData.nodes[nodeId]) {
+                            this.canvasData.nodes[nodeId].text = newText;
+                            this.requestSave(); 
+                        }
+
+                        textarea.remove();
+                        markdownContainer.style.display = 'block';
+                        markdownContainer.empty();
+                        
+                        MarkdownRenderer.render(this.plugin.app, newText + "\n", markdownContainer, "", this);
+                    };
+
+                    textarea.addEventListener('blur', saveEdit);
+                    textarea.addEventListener('keydown', (evt) => {
+                        if (evt.key === 'Enter' && (evt.ctrlKey || evt.metaKey)) {
+                            evt.preventDefault();
+                            saveEdit();
+                        }
+                    });
+                });
+            }
+
+            // --- 🛠️ BOTONERA (Solo se crea si es una tarjeta normal) ---
+            const actionsDiv = node.createDiv();
+            actionsDiv.style.position = 'absolute';
+            actionsDiv.style.bottom = '8px';
+            actionsDiv.style.right = '8px';
+            actionsDiv.style.display = 'flex';
+            actionsDiv.style.gap = '4px';
+            actionsDiv.style.zIndex = '20'; 
+
+            // Botón Borrar
+            const delBtn = actionsDiv.createEl('button', { title: "Remove from Canvas" });
+            setIcon(delBtn, 'trash'); 
+            this.styleMiniButton(delBtn, 'var(--text-muted)');
+            delBtn.onclick = (e) => {
+                e.stopPropagation();
+                node.remove();
+                delete this.canvasData.nodes[nodeId];
+                this.canvasData.stitches = this.canvasData.stitches.filter((s: any) => s.sourceId !== nodeId && s.targetId !== nodeId);
+                this.requestSave();
+                this.redrawLines();
+            };
+
+            // Botón Conectar (Stitch)
+            const stitchBtn = actionsDiv.createEl('button', { title: "Connect to another note" });
+            setIcon(stitchBtn, 'link'); 
+            this.styleMiniButton(stitchBtn, 'var(--color-blue)'); 
+            stitchBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.handleStitchClick(nodeId, node);
+            };
+
+            // Botón Expandir (Contexto)
+            const expandBtn = actionsDiv.createEl('button', { title: "Expand Context" });
+            setIcon(expandBtn, 'quote'); 
+            this.styleMiniButton(expandBtn, 'var(--color-purple)');
+            expandBtn.onclick = (e) => {
+                e.stopPropagation();
+                if (!item.context) {
+                    new Notice("No hay contexto adicional para esta nota.");
+                    return;
+                }
+
+                const currentX = parseInt(node.style.left, 10);
+                const currentY = parseInt(node.style.top, 10);
+                const contextX = currentX + 340; 
+                const contextY = currentY;
+                const contextNodeId = `ctx-${Date.now()}`;
+
+                let formattedContext = item.context.trim();
+                if (!formattedContext.startsWith('>')) {
+                    formattedContext = formattedContext.split('\n').map((l: string) => `> ${l}`).join('\n');
+                }
+
+                const contextItem = { text: formattedContext, color: 'var(--text-muted)', file: item.file, line: item.line, context: null };
+
+                this.saveNodeToSettings(contextNodeId, contextItem, contextX, contextY);
+                this.drawNode(contextNodeId, contextItem, contextX, contextY);
+
+                if (!this.canvasData.stitches) this.canvasData.stitches = [];
+                this.canvasData.stitches.push({ sourceId: nodeId, targetId: contextNodeId, label: "Contexto" });
+                
+                this.requestSave();
+                this.redrawLines();
+            };
+        }
+
+        // --- 🕹️ FÍSICA DE MOVIMIENTO EN GRUPO (MULTI-DRAG) ---
+        // ESTO VA PARA TODOS LOS NODOS (dibujos y tarjetas)
+        node.style.cursor = 'grab';
+        let isDragging = false;
+        let startX = 0, startY = 0;
+        
+        let draggedNodesData = new Map<string, { initialLeft: number, initialTop: number, el: HTMLElement }>();
+        let animationFrameId: number | null = null; 
+
+        const onMouseMove = (e: MouseEvent) => {
+            if (!isDragging) return;
+            
+            const dx = (e.clientX - startX) / this.zoomLevel;
+            const dy = (e.clientY - startY) / this.zoomLevel;
+            
+            if (!animationFrameId) {
+                animationFrameId = requestAnimationFrame(() => {
+                    draggedNodesData.forEach(data => {
+                        data.el.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+                    });
+                    animationFrameId = null;
+                });
+            }
+        };
+
+        const onMouseUp = (e: MouseEvent) => {
+            if (!isDragging) return;
+            isDragging = false;
+            
+            const dx = (e.clientX - startX) / this.zoomLevel;
+            const dy = (e.clientY - startY) / this.zoomLevel;
+
+            draggedNodesData.forEach((data, id) => {
+                const finalLeft = data.initialLeft + dx;
+                const finalTop = data.initialTop + dy;
+
+                data.el.style.transform = 'none';
+                data.el.style.left = `${finalLeft}px`;
+                data.el.style.top = `${finalTop}px`;
+                data.el.style.zIndex = '10';
+                data.el.style.willChange = 'auto'; 
+                
+                const mdContainer = data.el.querySelector('.markdown-rendered') as HTMLElement;
+                if(mdContainer) mdContainer.style.pointerEvents = 'auto'; 
+
+                if (this.canvasData.nodes[id]) {
+                    this.canvasData.nodes[id].x = finalLeft;
+                    this.canvasData.nodes[id].y = finalTop;
+                }
+            });
+
+            this.requestSave();
+            this.redrawLines();
+
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+
+            // 💥 PARCHE 1: Estampar y matar la selección flotante al soltar el ratón
+            if (item.isDoodleCut) {
+                this.clearSelection();
             }
-            return; 
-        }
+        };
 
-        const node = this.canvasEl.createDiv({ cls: 'cornell-pinboard-node' });
-        node.id = nodeId;
-        node.style.position = 'absolute';
-        node.style.left = `${x}px`;
-        node.style.top = `${y}px`;
-        node.style.minWidth = '300px';    // Tamaño mínimo para notas de texto
-        node.style.width = 'fit-content'; // 👈 MAGIA: Crece para ajustarse a su contenido (el PDF)
-        node.style.maxWidth = '800px';    // Límite máximo para que textos muy largos no crucen toda la pantalla
-        node.style.padding = '12px';
-        node.style.backgroundColor = 'var(--background-primary)'; 
-        node.style.border = '1px solid var(--background-modifier-border)';
-        node.style.borderLeft = `4px solid ${item.color || 'var(--text-accent)'}`;
-        node.style.borderRadius = '6px';
-        node.style.boxShadow = '0 4px 10px rgba(0,0,0,0.15)';
-        node.style.zIndex = '10';
-        
-        const markdownContainer = node.createDiv({ cls: 'cornell-pinboard-markdown markdown-rendered markdown-preview-view markdown-reading-view' });
-        markdownContainer.style.maxHeight = '400px'; 
-        markdownContainer.style.overflowY = 'auto';
-        markdownContainer.style.overflowX = 'hidden';
-        
-        // 🔮 MAGIA 1: Limpiamos los comentarios %% para aislar el enlace de PDF++
-        let cleanText = (item.text || "").replace(/%%[\s\S]*?%%/g, '').trim();
-        cleanText += "\n"; // Forzamos un salto de línea para que Obsidian procese bien los bloques
+        node.addEventListener('mousedown', (e: MouseEvent) => {
+            if ((e.target as HTMLElement).closest('button, a, .internal-link, .internal-embed, .pdf-embed, .pdf-cropped-embed, img')) return;
+            
+            if (this.isSpaceDown || e.button === 1) return;
 
-        // 🔮 MAGIA 2: Usamos la API Moderna de Obsidian. 
-        // Pasamos 'this' (la vista entera) para que PDF++ sepa que debe inyectar la imagen
-        MarkdownRenderer.render(
-            this.plugin.app,
-            cleanText,
-            markdownContainer,
-            item.file?.path || "",
-            this
-        ).then(() => {
-            // Parche CSS para asegurar que los recortes grandes no rompan la tarjeta
-            setTimeout(() => {
-                markdownContainer.querySelectorAll('img, .pdf-cropped-embed, .internal-embed').forEach(el => {
-                    const htmlEl = el as HTMLElement;
-                    htmlEl.style.maxWidth = '750px';
-                    htmlEl.style.height = 'auto';
-                    htmlEl.style.borderRadius = '4px';
-                    htmlEl.style.display = 'block';
-                });
-            }, 100);
-        });
+            e.stopPropagation();
 
-        // --- Metadatos y Modo Edición ---
-        if (item.file) {
-            const meta = node.createDiv({ text: `📄 ${item.file.basename}` });
-            meta.style.fontSize = '0.8em';
-            meta.style.color = 'var(--text-muted)';
-            meta.style.marginTop = '8px';
-            meta.style.borderTop = '1px dashed var(--background-modifier-border)';
-            meta.style.paddingTop = '4px';
-        } else if (item.isCustomText) {
-            const meta = node.createDiv({ text: `✏️ Doble clic para editar` });
-            meta.style.fontSize = '0.8em';
-            meta.style.color = 'var(--text-muted)';
-            meta.style.marginTop = '8px';
-            meta.style.borderTop = '1px dashed var(--background-modifier-border)';
-            meta.style.paddingTop = '4px';
+            this.containerEl.focus();
+            
+            if (!this.selectedNodes.has(nodeId)) {
+                if (!e.shiftKey) this.clearSelection();
+                this.selectNode(nodeId, node);
+            }
 
-            // ✏️ LÓGICA DE DOBLE CLIC PARA EDITAR
-            node.addEventListener('dblclick', (e) => {
-                e.stopPropagation();
-                if (node.querySelector('textarea')) return; // Ya estamos editando
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            draggedNodesData.clear();
 
-                markdownContainer.style.display = 'none'; // Ocultamos el markdown renderizado
-                
-                const textarea = node.createEl('textarea');
-                textarea.value = item.text || "";
-                textarea.style.width = '100%';
-                textarea.style.minHeight = '150px';
-                textarea.style.background = 'transparent';
-                textarea.style.color = 'var(--text-normal)';
-                textarea.style.border = '1px solid var(--interactive-accent)';
-                textarea.style.borderRadius = '4px';
-                textarea.style.padding = '8px';
-                textarea.style.resize = 'vertical';
-                textarea.style.fontFamily = 'inherit';
-                textarea.style.fontSize = 'inherit';
-                
-                textarea.focus();
-
-                const saveEdit = () => {
-                    const newText = textarea.value;
-                    item.text = newText;
-                    
-                    if (this.canvasData.nodes[nodeId]) {
-                        this.canvasData.nodes[nodeId].text = newText;
-                        this.requestSave(); // Guardar en el disco
-                    }
-
-                    textarea.remove();
-                    markdownContainer.style.display = 'block';
-                    markdownContainer.empty();
-                    
-                    // Volver a renderizar como Markdown
-                    MarkdownRenderer.render(this.plugin.app, newText + "\n", markdownContainer, "", this);
-                };
-
-                // Guardar al hacer clic fuera o presionar Ctrl+Enter
-                textarea.addEventListener('blur', saveEdit);
-                textarea.addEventListener('keydown', (evt) => {
-                    if (evt.key === 'Enter' && (evt.ctrlKey || evt.metaKey)) {
-                        evt.preventDefault();
-                        saveEdit();
-                    }
-                });
-            });
-        }
-
-        // --- 🕹️ FÍSICA DE MOVIMIENTO EN GRUPO (MULTI-DRAG) ---
-        node.style.cursor = 'grab';
-        let isDragging = false;
-        let startX = 0, startY = 0;
-        
-        // Memoria temporal para mover a todos los seleccionados juntos
-        let draggedNodesData = new Map<string, { initialLeft: number, initialTop: number, el: HTMLElement }>();
-        let animationFrameId: number | null = null; 
-
-        const onMouseMove = (e: MouseEvent) => {
-            if (!isDragging) return;
-            
-            // 🎯 Matemáticas: Mover el ratón 10px con zoom x2 equivale a mover el canvas 5px.
-            const dx = (e.clientX - startX) / this.zoomLevel;
-            const dy = (e.clientY - startY) / this.zoomLevel;
-            
-            if (!animationFrameId) {
-                animationFrameId = requestAnimationFrame(() => {
-                    // Mover TODAS las tarjetas en la selección usando GPU
-                    draggedNodesData.forEach(data => {
-                        data.el.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
-                    });
-                    animationFrameId = null;
-                });
-            }
-        };
-
-        const onMouseUp = (e: MouseEvent) => {
-            if (!isDragging) return;
-            isDragging = false;
-            
-            const dx = (e.clientX - startX) / this.zoomLevel;
-            const dy = (e.clientY - startY) / this.zoomLevel;
-
-            draggedNodesData.forEach((data, id) => {
-                const finalLeft = data.initialLeft + dx;
-                const finalTop = data.initialTop + dy;
-
-                data.el.style.transform = 'none';
-                data.el.style.left = `${finalLeft}px`;
-                data.el.style.top = `${finalTop}px`;
-                data.el.style.zIndex = '10';
-                data.el.style.willChange = 'auto'; 
-                
-                const mdContainer = data.el.querySelector('.markdown-rendered') as HTMLElement;
-                if(mdContainer) mdContainer.style.pointerEvents = 'auto'; 
-
-                // Guardar nuevas posiciones
-                if (this.canvasData.nodes[id]) {
-                    this.canvasData.nodes[id].x = finalLeft;
-                    this.canvasData.nodes[id].y = finalTop;
-                }
-            });
-
-            this.requestSave();
-            this.redrawLines();
-
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
-        };
-
-        node.addEventListener('mousedown', (e: MouseEvent) => {
-            if ((e.target as HTMLElement).closest('button, a, .internal-link, .internal-embed, .pdf-embed, .pdf-cropped-embed, img')) return;
-            
-            //  ESCUDO: No permitir arrastrar la tarjeta si estamos navegando con Espacio o Clic central
-            if (this.isSpaceDown || e.button === 1) return;
-
-            e.stopPropagation();
-
-            // 👇 NUEVO: Forzamos el foco en el contenedor general para "encender" el teclado
-            this.containerEl.focus();
-            
-            // 1. Si la nota NO estaba seleccionada, limpiamos el resto y la seleccionamos sola.
-            if (!this.selectedNodes.has(nodeId)) {
-                if (!e.shiftKey) this.clearSelection();
-                this.selectNode(nodeId, node);
-            }
-
-            // 2. Preparar el arrastre de TODAS las seleccionadas
-            isDragging = true;
-            startX = e.clientX;
-            startY = e.clientY;
-            draggedNodesData.clear();
-
-            this.selectedNodes.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) {
-                    draggedNodesData.set(id, {
-                        initialLeft: parseInt(el.style.left, 10) || 0,
-                        initialTop: parseInt(el.style.top, 10) || 0,
-                        el: el
-                    });
-                    el.style.zIndex = '100'; 
-                    el.style.willChange = 'transform';
-                    
-                    const mdContainer = el.querySelector('.markdown-rendered') as HTMLElement;
-                    if(mdContainer) mdContainer.style.pointerEvents = 'none';
-                }
-            });
-            
-            document.addEventListener('mousemove', onMouseMove);
-            document.addEventListener('mouseup', onMouseUp);
-        });
-
-        // --- 🛠️ BOTONERA RESTAURADA (Con iconos reales) ---
-        const actionsDiv = node.createDiv();
-        actionsDiv.style.position = 'absolute';
-        actionsDiv.style.bottom = '8px';
-        actionsDiv.style.right = '8px';
-        actionsDiv.style.display = 'flex';
-        actionsDiv.style.gap = '4px';
-        actionsDiv.style.zIndex = '20'; 
-
-        // Botón Borrar
-        const delBtn = actionsDiv.createEl('button', { title: "Remove from Canvas" });
-        setIcon(delBtn, 'trash'); 
-        this.styleMiniButton(delBtn, 'var(--text-muted)');
-        delBtn.onclick = (e) => {
-            e.stopPropagation();
-            node.remove();
-            delete this.canvasData.nodes[nodeId];
-            this.canvasData.stitches = this.canvasData.stitches.filter((s: any) => s.sourceId !== nodeId && s.targetId !== nodeId);
-            this.requestSave();
-            this.redrawLines();
-        };
-
-        // Botón Conectar (Stitch)
-        const stitchBtn = actionsDiv.createEl('button', { title: "Connect to another note" });
-        setIcon(stitchBtn, 'link'); 
-        this.styleMiniButton(stitchBtn, 'var(--color-blue)'); 
-        stitchBtn.onclick = (e) => {
-            e.stopPropagation();
-            this.handleStitchClick(nodeId, node);
-        };
-
-        // Botón Expandir (Contexto)
-        const expandBtn = actionsDiv.createEl('button', { title: "Expand Context" });
-        setIcon(expandBtn, 'quote'); 
-        this.styleMiniButton(expandBtn, 'var(--color-purple)');
-        expandBtn.onclick = (e) => {
-            e.stopPropagation();
-            
-            if (!item.context) {
-                new Notice("No hay contexto adicional para esta nota.");
-                return;
-            }
-
-            const currentX = parseInt(node.style.left, 10);
-            const currentY = parseInt(node.style.top, 10);
-            const contextX = currentX + 340; 
-            const contextY = currentY;
-            const contextNodeId = `ctx-${Date.now()}`;
-
-            let formattedContext = item.context.trim();
-            // Agregamos la cita sin romper enlaces multilínea
-            if (!formattedContext.startsWith('>')) {
-                formattedContext = formattedContext.split('\n').map((l: string) => `> ${l}`).join('\n');
-            }
-
-            const contextItem = {
-                text: formattedContext, 
-                color: 'var(--text-muted)',
-                file: item.file, 
-                line: item.line,
-                context: null 
-            };
-
-            this.saveNodeToSettings(contextNodeId, contextItem, contextX, contextY);
-            this.drawNode(contextNodeId, contextItem, contextX, contextY);
-
-            if (!this.canvasData.stitches) this.canvasData.stitches = [];
-            this.canvasData.stitches.push({
-                sourceId: nodeId,
-                targetId: contextNodeId,
-                label: "Contexto"
-            });
-            
-            this.requestSave();
-            this.redrawLines();
-        };
-    }
+            this.selectedNodes.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    draggedNodesData.set(id, {
+                        initialLeft: parseInt(el.style.left, 10) || 0,
+                        initialTop: parseInt(el.style.top, 10) || 0,
+                        el: el
+                    });
+                    el.style.zIndex = '100'; 
+                    el.style.willChange = 'transform';
+                    
+                    const mdContainer = el.querySelector('.markdown-rendered') as HTMLElement;
+                    if(mdContainer) mdContainer.style.pointerEvents = 'none';
+                }
+            });
+            
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        });
+    }
 
     // ======================================================
     // ⛓️ LÓGICA DE CONEXIÓN (STITCHING)
@@ -1450,48 +1575,52 @@ export class PinboardView extends TextFileView {
     }
 
     // 💾 MEMORIA PERSISTENTE
-    saveNodeToSettings(nodeId: string, item: any, x: number, y: number) {
-        if (!this.canvasData.nodes) this.canvasData.nodes = {};
-        
-        this.canvasData.nodes[nodeId] = {
-            id: nodeId,
-            x: x,
-            y: y,
-            text: item.text,
-            color: item.color,
-            filePath: item.file ? item.file.path : null,
-            line: item.line,
-            context: item.context,
-            isCustomText: item.isCustomText // 👈 VITAL: Recordar que es una nota libre
-        };
-        
-        this.requestSave();
-    }
+    saveNodeToSettings(nodeId: string, item: any, x: number, y: number) {
+        if (!this.canvasData.nodes) this.canvasData.nodes = {};
+        
+        this.canvasData.nodes[nodeId] = {
+            id: nodeId,
+            x: x,
+            y: y,
+            text: item.text,
+            color: item.color,
+            filePath: item.file ? item.file.path : null,
+            line: item.line,
+            context: item.context,
+            isCustomText: item.isCustomText, // 👈 VITAL: Recordar que es una nota libre
+            isDoodleCut: item.isDoodleCut,   // 👈 ¡NUEVO! Memorizar que es un recorte de dibujo
+            doodleImg: item.doodleImg        // 👈 ¡NUEVO! Guardar los píxeles del dibujo
+        };
+        
+        this.requestSave();
+    }
 
-    async renderSavedNodes() {
-        if (!this.canvasData.nodes) return;
-        
-        const nodes = this.canvasData.nodes;
-        for (const key in nodes) {
-            const n = nodes[key];
-            
-            let fileObj = null;
-            if (n.filePath) {
-                fileObj = this.plugin.app.vault.getAbstractFileByPath(n.filePath);
-            }
+    async renderSavedNodes() {
+        if (!this.canvasData.nodes) return;
+        
+        const nodes = this.canvasData.nodes;
+        for (const key in nodes) {
+            const n = nodes[key];
+            
+            let fileObj = null;
+            if (n.filePath) {
+                fileObj = this.plugin.app.vault.getAbstractFileByPath(n.filePath);
+            }
 
-            const mockItem = {
-                text: n.text,
-                color: n.color,
-                file: fileObj,
-                line: n.line,
-                context: n.context,
-                isCustomText: n.isCustomText // 👈 Cargamos si es nota libre
-            };
+            const mockItem = {
+                text: n.text,
+                color: n.color,
+                file: fileObj,
+                line: n.line,
+                context: n.context,
+                isCustomText: n.isCustomText, // 👈 Cargamos si es nota libre
+                isDoodleCut: n.isDoodleCut,   // 👈 ¡NUEVO! Cargamos la bandera del dibujo
+                doodleImg: n.doodleImg        // 👈 ¡NUEVO! Cargamos la imagen base64
+            };
 
-            this.drawNode(n.id, mockItem, n.x, n.y);
-        }
-    }
+            this.drawNode(n.id, mockItem, n.x, n.y);
+        }
+    }
     // ======================================================
     // 📝 MOTOR DE TARJETAS DE TEXTO LIBRES (POST-ITS)
     // ======================================================
@@ -1513,11 +1642,35 @@ export class PinboardView extends TextFileView {
     // ======================================================
     saveDoodleTimeout: any = null; // Variable para el Anti-Freeze
 
+    // 🧠 MOTOR DE GUARDADO INTELIGENTE Y SIN LAG
+    triggerSmartSave() {
+        if (this.saveDoodleTimeout) clearTimeout(this.saveDoodleTimeout);
+        this.saveDoodleTimeout = setTimeout(() => {
+            // Si el usuario está dibujando o seleccionando, posponemos el guardado
+            if (this.isDoodling || this.isSelecting || this.currentTool !== 'hand') {
+                this.triggerSmartSave();
+                return;
+            }
+            
+            // Exportamos la imagen en un hilo secundario de la computadora
+            this.doodleCanvasEl.toBlob((blob) => {
+                if (!blob) return;
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    this.canvasData.doodleDataUrl = reader.result as string;
+                    this.saveDoodleTimeout = null;
+                    this.requestSave(); // Guardado limpio en Obsidian
+                };
+                reader.readAsDataURL(blob);
+            }, "image/png");
+        }, 1500); // Espera 1.5 segundos de inactividad total antes de guardar
+    }
+
     setupDoodleEngine() {
-        let cachedRect: DOMRect | null = null; // 🚀 MEMORIA CACHÉ PARA EVITAR LAYOUT THRASHING
+        let cachedRect: DOMRect | null = null; 
+        let originalToolBeforeShift: 'hand' | 'pen' | 'eraser' | null = null; // 🧠 Memoria para el atajo Shift
 
         const getPointerPos = (e: PointerEvent) => {
-            // Si tenemos el rect en memoria, lo usamos. Es 1000x más rápido que recalcular.
             const rect = cachedRect || this.canvasEl.getBoundingClientRect();
             return { 
                 x: (e.clientX - rect.left) / this.zoomLevel, 
@@ -1544,27 +1697,40 @@ export class PinboardView extends TextFileView {
             }
             
             this.isDoodling = false;
-            this.strokePoints = [];
-            this.lastDrawnIndex = 1;
-            cachedRect = null; // Limpiamos la caché geométrica
-            
-            // 🚀 GUARDADO DIFERIDO (DEBOUNCE ANTI-FREEZE)
-            // Codificar 5000x5000 px tarda milisegundos preciosos. 
-            // Esperamos a que lleves 1 segundo sin dibujar para guardar, evitando tirones.
-            if (this.saveDoodleTimeout) clearTimeout(this.saveDoodleTimeout);
-            this.saveDoodleTimeout = setTimeout(() => {
-                this.canvasData.doodleDataUrl = this.doodleCanvasEl.toDataURL("image/png");
-                this.requestSave();
-            }, 1000); 
-        };
+            this.strokePoints = [];
+            this.lastDrawnIndex = 1;
+            cachedRect = null; 
+            
+            this.triggerSmartSave(); // 👈 El nuevo guardado
+        };
 
         this.doodleCanvasEl.addEventListener("pointerdown", (e: PointerEvent) => {
-            if (this.currentTool === 'hand' || e.button !== 0) return;
+            // 🛡️ ATAJO 1: CTRL/CMD PARA SELECCIONAR TARJETAS
+            if (e.ctrlKey || e.metaKey) {
+                // Hacemos el lienzo de dibujo "transparente" a los clics temporalmente
+                this.doodleCanvasEl.style.pointerEvents = 'none';
+                
+                // Clonamos el clic y se lo pasamos al fondo (donde vive la herramienta de selección)
+                const clonedEvent = new MouseEvent('mousedown', e);
+                this.canvasEl.dispatchEvent(clonedEvent);
+                return;
+            }
+
+            if (this.currentTool === 'hand' || e.button !== 0 || this.isSpaceDown) return;
+
+            // 💥 PARCHE 3: Si el lápiz toca el cristal de dibujo, obliga a estampar 
+            // cualquier selección activa antes de soltar tinta.
+            this.clearSelection();
             
+            // 🛡️ ATAJO 2: SHIFT PARA GOMA TEMPORAL
+            if (e.shiftKey && this.currentTool === 'pen') {
+                originalToolBeforeShift = this.currentTool;
+                this.currentTool = 'eraser';
+            }
+
             this.doodleCanvasEl.setPointerCapture(e.pointerId);
             this.isDoodling = true;
             
-            // 🚀 Guardamos las coordenadas una sola vez al tocar la pantalla
             cachedRect = this.canvasEl.getBoundingClientRect(); 
             
             const isEraser = this.currentTool === 'eraser';
@@ -1595,42 +1761,44 @@ export class PinboardView extends TextFileView {
         this.doodleCanvasEl.addEventListener("pointermove", (e: PointerEvent) => {
             if (!this.isDoodling) return;
 
+            // 1. Recogemos todos los micro-movimientos del ratón/lápiz
             const coalescedEvents = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
             for (const ev of coalescedEvents) {
                 this.strokePoints.push(getPointerPos(ev));
             }
 
-            if (!this.isDrawingFrameScheduled) {
-                this.isDrawingFrameScheduled = true;
-                requestAnimationFrame(() => {
-                    this.isDrawingFrameScheduled = false;
-                    
-                    if (this.isDoodling && this.strokePoints.length > this.lastDrawnIndex) {
-                        this.doodleCtx.beginPath();
-                        
-                        const p1 = this.strokePoints[this.lastDrawnIndex - 1];
-                        const p2 = this.strokePoints[this.lastDrawnIndex];
-                        const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
-                        
-                        this.doodleCtx.moveTo(mid.x, mid.y);
+            // 🚀 2. DIBUJO SÍNCRONO ULTRA RÁPIDO (Cero Lag)
+            // Eliminamos el requestAnimationFrame para que la tinta salga instantáneamente
+            if (this.strokePoints.length > this.lastDrawnIndex) {
+                this.doodleCtx.beginPath();
+                
+                const p1 = this.strokePoints[this.lastDrawnIndex - 1];
+                const p2 = this.strokePoints[this.lastDrawnIndex];
+                const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+                
+                this.doodleCtx.moveTo(mid.x, mid.y);
 
-                        for (let i = this.lastDrawnIndex + 1; i < this.strokePoints.length; i++) {
-                            const pt2 = this.strokePoints[i - 1];
-                            const pt3 = this.strokePoints[i];
-                            const mid_next = { x: (pt2.x + pt3.x) / 2, y: (pt2.y + pt3.y) / 2 };
-                            this.doodleCtx.quadraticCurveTo(pt2.x, pt2.y, mid_next.x, mid_next.y);
-                        }
-                        
-                        this.doodleCtx.stroke();
-                        this.lastDrawnIndex = this.strokePoints.length - 1; 
-                    }
-                });
+                for (let i = this.lastDrawnIndex + 1; i < this.strokePoints.length; i++) {
+                    const pt2 = this.strokePoints[i - 1];
+                    const pt3 = this.strokePoints[i];
+                    const mid_next = { x: (pt2.x + pt3.x) / 2, y: (pt2.y + pt3.y) / 2 };
+                    this.doodleCtx.quadraticCurveTo(pt2.x, pt2.y, mid_next.x, mid_next.y);
+                }
+                
+                this.doodleCtx.stroke();
+                this.lastDrawnIndex = this.strokePoints.length - 1; 
             }
         });
 
         this.doodleCanvasEl.addEventListener("pointerup", (e: PointerEvent) => {
             this.doodleCanvasEl.releasePointerCapture(e.pointerId);
             commitStroke();
+
+            // 🧠 RESTAURAR HERRAMIENTA DESPUÉS DEL ATAJO SHIFT
+            if (originalToolBeforeShift) {
+                this.currentTool = originalToolBeforeShift;
+                originalToolBeforeShift = null;
+            }
         });
 
         window.addEventListener('blur', () => { if (this.isDoodling) commitStroke(); });
@@ -1670,10 +1838,9 @@ export class PinboardView extends TextFileView {
         }
         
         if (modified) {
-            this.doodleCtx.putImageData(imgData, 0, 0);
-            this.canvasData.doodleDataUrl = this.doodleCanvasEl.toDataURL("image/png");
-            this.requestSave(); // Guardamos el nuevo archivo con los colores corregidos
-        }
+            this.doodleCtx.putImageData(imgData, 0, 0);
+            this.saveCanvasInBg();
+        }
     }
     // ======================================================
     // 📸 UTILIDAD: Convertidor de Imagen a Archivo Físico

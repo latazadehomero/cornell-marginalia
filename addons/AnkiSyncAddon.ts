@@ -3,8 +3,6 @@ import { CornellAddon } from "./CornellAddon";
 import type CornellMarginalia from "../main";
 import { sanitizeAnkiDeckName } from "../main";
 
-
-
 export class AnkiSyncAddon extends CornellAddon {
     id = "anki-sync";
     name = "Anki Advanced Sync";
@@ -20,7 +18,7 @@ export class AnkiSyncAddon extends CornellAddon {
             callback: () => this.startSyncProcess()
         });
 
-        // 2. NUEVO: Comando Masivo (Bóveda Completa)
+        // 2. Comando Masivo (Bóveda Completa)
         this.plugin.addCommand({
             id: 'sync-vault-to-anki',
             name: 'Sync ALL Vault Flashcards to Anki (Tag-Mapped)',
@@ -32,9 +30,8 @@ export class AnkiSyncAddon extends CornellAddon {
 
     async invokeAnki(action: string, params: any = {}): Promise<any> {
         try {
-            // 🛡️ Controlador de aborto para evitar que Obsidian se congele si Anki está apagado
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 segundos de espera máxima
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
 
             const response = await fetch('http://localhost:8765', {
                 method: 'POST',
@@ -64,7 +61,6 @@ export class AnkiSyncAddon extends CornellAddon {
         new AnkiDeckModal(this.plugin.app, this, activeFile).open();
     }
 
-    // 🚀 NUEVO MOTOR: ESCÁNER MASIVO DE BÓVEDA
     async syncAllVaultCards() {
         const mappings = this.plugin.settings.ankiTagToDeck;
         if (!mappings || Object.keys(mappings).length === 0) {
@@ -83,19 +79,16 @@ export class AnkiSyncAddon extends CornellAddon {
             const cache = this.plugin.app.metadataCache.getFileCache(file);
             if (!cache) continue;
             
-            // Extraer etiquetas del archivo
             const tags = getAllTags(cache) || [];
             
-            // Buscar si alguna de las etiquetas del archivo existe en nuestras rutas configuradas
             let targetDeck: string | null = null;
             for (const tag of tags) {
                 if (mappings[tag]) {
                     targetDeck = mappings[tag];
-                    break; // Usamos el primer tag que coincida
+                    break;
                 }
             }
 
-            // Si el archivo tiene un tag válido y asignado a un mazo, lo procesamos
             if (targetDeck) {
                 try {
                     const result = await this.syncSingleFileCore(file, targetDeck);
@@ -186,10 +179,14 @@ export class AnkiSyncAddon extends CornellAddon {
             }
         }
 
+        // Regex para capturar imágenes incrustadas nativas
         const imgRegex = /!\[\[(.*?\.(?:png|jpg|jpeg|gif|svg))\]\]/gi;
         let imgMatch;
         while ((imgMatch = imgRegex.exec(processedText)) !== null) {
-            const filename = imgMatch[1].trim();
+            // OPTIMIZACIÓN: Limpiamos barras inclinadas iniciales '/' que hereda de Zotflow
+            const filenameRaw = imgMatch[1].trim();
+            const filename = filenameRaw.replace(/^\/+/, ""); 
+
             const file = this.plugin.app.metadataCache.getFirstLinkpathDest(filename, "");
             if (file) {
                 const arrayBuffer = await this.plugin.app.vault.readBinary(file);
@@ -203,7 +200,70 @@ export class AnkiSyncAddon extends CornellAddon {
         return processedText;
     }
 
-    // 🚀 FUNCIÓN ENVOLTORIO PARA EL COMANDO INDIVIDUAL
+    /**
+     * Resuelve enlaces de bloques e incorpora un pipeline estricto de limpieza
+     * para remover la sintaxis de metadatos generada por Zotflow.
+     */
+    async resolveBlockEmbeds(text: string, sourceFile: TFile): Promise<string> {
+        const blockEmbedRegex = /!\[\[([^#\]|]+)#\^([a-zA-Z0-9-]+)\]\]/g;
+        let processedText = text;
+        
+        const matches = Array.from(text.matchAll(blockEmbedRegex));
+        
+        for (const match of matches) {
+            const [fullMatch, linkPath, blockId] = match;
+            
+            let targetFile = this.plugin.app.metadataCache.getFirstLinkpathDest(linkPath.trim(), sourceFile.path);
+            
+            if (!targetFile) {
+                const cleanPath = linkPath.trim();
+                targetFile = this.plugin.app.vault.getAbstractFileByPath(cleanPath) as TFile ||
+                             this.plugin.app.vault.getAbstractFileByPath(cleanPath + ".md") as TFile;
+            }
+
+            if (targetFile instanceof TFile) {
+                const cache = this.plugin.app.metadataCache.getFileCache(targetFile);
+                const blockData = cache?.blocks?.[blockId.toLowerCase()] || cache?.blocks?.[blockId];
+                
+                let extractedText = "";
+
+                if (blockData) {
+                    const content = await this.plugin.app.vault.read(targetFile);
+                    extractedText = content.substring(blockData.position.start.offset, blockData.position.end.offset);
+                } else {
+                    const content = await this.plugin.app.vault.read(targetFile);
+                    const lines = content.split("\n");
+                    const targetLine = lines.find(l => l.includes(`^${blockId}`));
+                    if (targetLine) extractedText = targetLine;
+                }
+
+                if (extractedText) {
+                    // --- PIPELINE DE LIMPIEZA ESTRICTA (ZOTFLOW & CALLOUTS) ---
+                    
+                    // 1. Quitar el ID de bloque al final (ej: ^AFXXIY55)
+                    let cleanText = extractedText.replace(new RegExp(`\\^${blockId}`, "gi"), "");
+
+                    // 2. Eliminar cabeceras de callout de Zotflow (ej: [!zotflow-highlight-#e56eee])
+                    cleanText = cleanText.replace(/\[!zotflow-[^\]]+\]/gi, "");
+
+                    // 3. Eliminar links a PDFs del tipo [[archivo.pdf...|display]] sin romper los embeds de imagen ![[...]]
+                    // Se usa un Lookbehind Negativo (?<!!) para asegurar que si hay un '!' antes, no lo toque.
+                    cleanText = cleanText.replace(/(?<!!)\[\[.*?\]\]/g, "");
+
+                    // 4. Limpiar caracteres '>' remanentes de bloques de cita y formatear espacios
+                    cleanText = cleanText
+                        .replace(/>/g, "") // Remueve selectivamente todos los símbolos de cita remanentes
+                        .trim();
+                    
+                    processedText = processedText.replace(fullMatch, cleanText);
+                }
+            } else {
+                console.warn(`AnkiSync: No se pudo encontrar el archivo de cita: ${linkPath}`);
+            }
+        }
+        return processedText;
+    }
+
     async processAndSendCards(file: TFile, deckName: string) {
         new Notice(`⏳ Syncing ${file.basename} with Anki...`);
         try {
@@ -218,7 +278,6 @@ export class AnkiSyncAddon extends CornellAddon {
         }
     }
 
-    // 🚀 EL NÚCLEO (SILENCIOSO) QUE HACE EL TRABAJO DURO
     async syncSingleFileCore(file: TFile, deckName: string): Promise<{added: number, updated: number}> {
         const decks = await this.invokeAnki('deckNames');
         if (!decks.includes(deckName)) {
@@ -241,22 +300,21 @@ export class AnkiSyncAddon extends CornellAddon {
         const cache = this.plugin.app.metadataCache.getFileCache(file);
         const noteTags = cache ? (getAllTags(cache)?.map(t => t.replace('#', '')) || []) : [];
 
-        // 👇 NUEVO REGEX: 
-        // match[1] = Dirección (> o <)
-        // match[2] = Pregunta
-        // match[3] = Basura sobrante (Enlaces, IDs)
-        const flashcardRegex = /%%([><])\s*([\s\S]*?)\s*;;\s*([\s\S]*?)%%/g;
+        const flashcardRegex = /%%([><])\s*([\s\S]*?)\s*; Nano\s*([\s\S]*?)%%/g;
+        // Ajuste preventivo del Regex general por si cambia delimitador, manteniendo fallback estándar:
+        const standardRegex = /%%([><])\s*([\s\S]*?)\s*;;\s*([\s\S]*?)%%/g;
+        const activeRegex = content.match(standardRegex) ? standardRegex : flashcardRegex;
+
         let match;
         let added = 0, updated = 0;
         const replacements: { start: number, end: number, text: string }[] = [];
 
-        while ((match = flashcardRegex.exec(content)) !== null) {
+        while ((match = activeRegex.exec(content)) !== null) {
             const fullMatch = match[0];
             const direction = match[1];
             const questionRaw = match[2].trim(); 
             const trailingData = match[3] || ""; 
 
-            // Buscamos el ID de Anki dentro de la basura sobrante
             const ankiIdMatch = trailingData.match(/[\^~]anki-(\d+)/);
             const existingAnkiId = ankiIdMatch ? ankiIdMatch[1] : null;
 
@@ -268,22 +326,25 @@ export class AnkiSyncAddon extends CornellAddon {
 
             const fullBlock = content.substring(blockStart, blockEnd);
 
-            // La RESPUESTA es todo el bloque, restándole la pregunta y la basura
             let answerRaw = fullBlock.replace(fullMatch, ''); 
             
-            // 🛡️ PURIFICADOR DE FRONTMATTER (Propiedades de Obsidian)
-            answerRaw = answerRaw.replace(/^---[\s\S]*?---\s*/, '');
-            // 🧹 Limpiamos los Block IDs residuales
-            answerRaw = answerRaw.replace(/\s*[\^~“][a-zA-Z0-9-]{5,}\s*/g, ' '); 
-            answerRaw = answerRaw.trim();
+            // 1. Resolver e inyectar el texto limpio de Zotflow
+            answerRaw = await this.resolveBlockEmbeds(answerRaw, file);
 
+            // 2. Procesar conversiones de Medios a etiquetas HTML de Anki
             const questionHtml = await this.processMediaInText(questionRaw);
             const answerHtml = await this.processMediaInText(answerRaw);
+
+            // 3. Limpieza final de IDs huérfanos
+            let finalAnswer = answerHtml
+                .replace(/^---[\s\S]*?---\s*/, '') 
+                .replace(/(?<!#)[\^~“][a-zA-Z0-9-]{5,}/g, '') 
+                .trim();
 
             const noteParams = {
                 deckName: deckName,
                 modelName: modelName,
-                fields: { [frontField]: questionHtml, [backField]: answerHtml },
+                fields: { [frontField]: questionHtml, [backField]: finalAnswer },
                 options: { allowDuplicate: false }, 
                 tags: noteTags
             };
@@ -312,7 +373,6 @@ export class AnkiSyncAddon extends CornellAddon {
                         if (foundIds && foundIds.length > 0) {
                             finalAnkiId = foundIds[0].toString();
                             await this.invokeAnki('updateNoteFields', { 
-                                // 👇 FIX: Le decimos explícitamente a TypeScript que aquí finalAnkiId ES un string
                                 note: { id: parseInt(finalAnkiId as string, 10), fields: noteParams.fields } 
                             });
                             updated++;
@@ -324,7 +384,6 @@ export class AnkiSyncAddon extends CornellAddon {
             }
 
             if (finalAnkiId) {
-                // Reconstruimos la cola de la nota, conservando los enlaces del Rizoma
                 let newTrailingData = trailingData;
                 if (existingAnkiId) {
                     newTrailingData = newTrailingData.replace(/[\^~]anki-\d+/, `^anki-${finalAnkiId}`);
@@ -332,14 +391,15 @@ export class AnkiSyncAddon extends CornellAddon {
                     newTrailingData = `^anki-${finalAnkiId} ` + newTrailingData;
                 }
                 
-                const updatedMatch = `%%${direction} ${questionRaw} ;; ${newTrailingData.trim()} %%`;
-                if (updatedMatch !== fullMatch) {
-                    replacements.push({
-                        start: match.index,
-                        end: match.index + fullMatch.length,
-                        text: updatedMatch
-                    });
-                }
+                const updatedMatch = activeRegex === standardRegex 
+                    ? `%%${direction} ${questionRaw} ;; ${newTrailingData.trim()} %%`
+                    : `%%${direction} ${questionRaw} ; ${newTrailingData.trim()} %%`;
+
+                replacements.push({
+                    start: match.index,
+                    end: match.index + fullMatch.length,
+                    text: updatedMatch
+                });
             }
         }
 
@@ -355,9 +415,6 @@ export class AnkiSyncAddon extends CornellAddon {
     }
 }
 
-// =================================================================
-// 🖼️ MODAL DE INTERFAZ PARA SELECCIONAR MAZO (Sin cambios)
-// =================================================================
 class AnkiDeckModal extends Modal {
     addon: AnkiSyncAddon;
     file: TFile;
@@ -375,7 +432,7 @@ class AnkiDeckModal extends Modal {
         contentEl.createEl("h3", { text: "🧠 Sync with Anki" });
 
         const inputDiv = contentEl.createDiv({ attr: { style: "margin-bottom: 15px;" }});
-        inputDiv.createEl("label", { text: "Deck Name (e.g. Programming::JavaScript): ", attr: { style: "display:block; margin-bottom:5px;" }});
+        inputDiv.createEl("label", { text: "Deck Name (e.g. Med::Cardio): ", attr: { style: "display:block; margin-bottom:5px;" }});
         
         this.deckInput = inputDiv.createEl("input", { type: "text", placeholder: "Deck::Subdeck" });
         this.deckInput.style.width = "100%";
@@ -403,23 +460,17 @@ class AnkiDeckModal extends Modal {
         const syncBtn = btnContainer.createEl("button", { text: "🚀 Sync", cls: "mod-cta" });
         syncBtn.onclick = async () => {
             const rawDeckName = this.deckInput.value;
-            
-            // 🛡️ SANITIZACIÓN: Limpiamos el nombre del mazo antes de hacer nada
             const safeDeckName = sanitizeAnkiDeckName(rawDeckName);
 
             if (!safeDeckName) {
-                new Notice("⚠️ Invalid deck name. Please use alphanumeric characters.");
+                new Notice("⚠️ Invalid deck name.");
                 return;
             }
 
             if (!this.addon.recentDecks) this.addon.recentDecks = [];
-            
-            // 🛡️ Guardamos el nombre SEGURO en el historial, no el raw
             this.addon.recentDecks = [safeDeckName, ...this.addon.recentDecks.filter(d => d !== safeDeckName)].slice(0, 5);
             
             this.close();
-            
-            // Enviamos el nombre seguro a procesar
             await this.addon.processAndSendCards(this.file, safeDeckName);
         };
         

@@ -245,9 +245,9 @@ body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout:ho
     text-shadow: none !important;
 }
 
-body.cornell-active-recall-on .cornell-flashcard-target mjx-container:hover,
+body.cornell-active-recall-on .cornell-flashcard-target [class*="mjx-container"]:hover,
 body.cornell-active-recall-on .cornell-flashcard-target img:not(.cm-cornell-margin img):hover,
-body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block mjx-container:hover,
+body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block [class*="mjx-container"]:hover,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block img:not(.cm-cornell-margin img):hover,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout img:hover {
     filter: blur(0px) opacity(1) !important;
@@ -750,16 +750,7 @@ body.theme-dark .cornell-rhizome-node img[src*="doodle_"] {
     transition: filter 0.3s ease, opacity 0.3s ease; 
 }
 
-/* 🧼 LIMPIEZA TOTAL DE BORDES PARA DOODLES (Efecto "Tinta en Papel") */
-.cm-cornell-margin img[src*="doodle_"],
-.reading-mode-margin img[src*="doodle_"],
-.cornell-rhizome-node img[src*="doodle_"] {
-    border: none !important; 
-    box-shadow: none !important;
-    background: transparent !important;
-    padding: 0 !important;
-    outline: none !important;
-}
+
 
 /* 🧼 LIMPIEZA TOTAL DE BORDES PARA DOODLES (Efecto "Tinta en Papel") */
 
@@ -950,14 +941,6 @@ input.cornell-search-bar {
 input.cornell-search-bar:focus {
     background-color: var(--background-modifier-form-field);
 }
-
-/* 🛡️ ESCUDO ANTI-ROBO DE HOVER PARA LA BARRA LATERAL */
-/* Convierte las miniaturas en fantasmas para el ratón, permitiendo que la caja principal detecte el hover y muestre el texto de la nota */
-/* .cornell-sidebar-item-text .internal-embed,
-/*.cornell-sidebar-item-text img {
-/*    pointer-events: none !important;
-/* }
-
 
 
 /* ======================================================
@@ -2381,7 +2364,6 @@ body.cornell-active-recall-on.cornell-blur-explanatory .cornell-flashcard-target
 }
 
 /* 🎯 Asignación Semántica Estricta (Esto previene el solapamiento en [1,1]) */
-.dashboard-timeline-container { grid-area: timeline; min-height: 0; display: flex; flex-direction: column; }
 .dashboard-planner  { grid-area: planner; }
 .dashboard-subjects { grid-area: subjects; }
 .dashboard-tracker  { grid-area: tracker; }

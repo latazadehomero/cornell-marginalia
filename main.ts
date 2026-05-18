@@ -10734,6 +10734,7 @@ const regex = UNIVERSAL_MARGINALIA_REGEX;
     if (el.classList.contains("block-language-cornell") || el.querySelector(".cornell-editorial-wrapper")) {
         return;
     }
+    
 
     // 🪄 ZOTEROFLOW FIX: ENVOLTORIO QUIRÚRGICO (Modo Lectura)
     // Actualizado para atrapar \%%\> y \%%/\>
@@ -10978,6 +10979,22 @@ const regex = UNIVERSAL_MARGINALIA_REGEX;
         }
     });
 });
+// NUEVO CODIGO DE IMPRESION
+    this.registerMarkdownPostProcessor((el, ctx) => {
+        const printMargins = el.querySelectorAll('.cornell-print-margin');
+        
+        printMargins.forEach(margin => {
+            const parent = margin.closest('p, li, blockquote');
+            if (parent) {
+                const direction = margin.getAttribute('data-direction');
+                if (direction === '>') {
+                    parent.classList.add('cornell-print-parent-left');
+                } else if (direction === '<') {
+                    parent.classList.add('cornell-print-parent-right');
+                }
+            }
+        });
+    });
     }
     // 🧠 PROCESADOR DE TEMPLATER EN RAM
 async processTemplaterDrop(text: string, pos: number, view: EditorView) {

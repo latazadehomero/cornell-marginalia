@@ -303,25 +303,21 @@ body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-bloc
 
 @media print {
     /* 1. La "Caja Fuerte" (El Párrafo) - Direccionalidad Izquierda (%%>) */
-    p:has(.cornell-print-margin[data-direction=">"]),
-    li:has(.cornell-print-margin[data-direction=">"]),
-    blockquote:has(.cornell-print-margin[data-direction=">"]) {
-        position: relative ;
-        padding-left: 28% ; /* Deja espacio a la izquierda */
-        page-break-inside: avoid ;
-        break-inside: avoid ;
-        display: flow-root ; 
+    .cornell-print-parent-left {
+        position: relative;
+        padding-left: 28%; /* Deja espacio a la izquierda */
+        page-break-inside: avoid;
+        break-inside: avoid;
+        display: flow-root; 
     }
 
     /* 1b. La "Caja Fuerte" (El Párrafo) - Direccionalidad Derecha (%%<) */
-    p:has(.cornell-print-margin[data-direction="<"]),
-    li:has(.cornell-print-margin[data-direction="<"]),
-    blockquote:has(.cornell-print-margin[data-direction="<"]) {
-        position: relative ;
-        padding-right: 28% ; /* Deja espacio a la derecha */
-        page-break-inside: avoid ;
-        break-inside: avoid ;
-        display: flow-root ; 
+    .cornell-print-parent-right {
+        position: relative;
+        padding-right: 28%; /* Deja espacio a la derecha */
+        page-break-inside: avoid;
+        break-inside: avoid;
+        display: flow-root; 
     }
 
     /* 2. Clase base de Marginalia */

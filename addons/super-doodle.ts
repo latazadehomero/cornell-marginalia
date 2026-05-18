@@ -116,16 +116,6 @@ function getOCROptimizedCanvas(originalCanvas: HTMLCanvasElement, bounds: any): 
     return ocrCanvas;
 }
 
-async function loadTesseract(): Promise<any> {
-    if ((window as any).Tesseract) return (window as any).Tesseract;
-    return new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
-        script.onload = () => resolve((window as any).Tesseract);
-        script.onerror = () => reject(new Error("Error cargando Tesseract. Revisa tu conexión a internet."));
-        document.head.appendChild(script);
-    });
-}
 
 export abstract class CornellAddon {
     abstract id: string;
@@ -628,127 +618,7 @@ if (view.zenIsDrawing) {
                 api.clear();
             };
 
-            // BOTÓN MÁGICO OCR CON WHITELIST
-            const ocrBtn = rightGrp.createEl('button', { text: '🔤 OCR', title: 'Convert handwriting to editable text' });
-            ocrBtn.style.backgroundColor = 'var(--background-modifier-success)';
-            ocrBtn.style.color = 'var(--text-on-accent)';
             
-            ocrBtn.onclick = async () => {
-                let ocrTargetCanvas: HTMLCanvasElement;
-                let startX = 0, startY = 0, boxWidth = 300, boxHeight = 100;
-                let isSelectionMode = false;
-
-                const phase = api.getSelectionPhase();
-                const fCanvas = api.getFloatingCanvas();
-                const rect = api.getSelectionRect();
-
-                if (phase === 'floating' && fCanvas) {
-                    isSelectionMode = true;
-                    startX = rect.x; startY = rect.y; boxWidth = rect.w; boxHeight = rect.h;
-                    ocrTargetCanvas = getOCROptimizedCanvas(fCanvas, {minX: 0, minY: 0, maxX: fCanvas.width, maxY: fCanvas.height});
-                } else {
-                    const bounds = api.getBounds();
-                    if (bounds.minX === Infinity) {
-                        new Notice("¡El lienzo está vacío! Dibuja o selecciona letras primero.");
-                        return;
-                    }
-                    startX = bounds.minX; startY = bounds.minY; boxWidth = bounds.maxX - bounds.minX; boxHeight = bounds.maxY - bounds.minY;
-                    ocrTargetCanvas = getOCROptimizedCanvas(view.zenCanvasEl, bounds);
-                    api.commitSelection();
-                }
-
-                const notice = new Notice("⏳ Iniciando motor OCR... (Puede tardar la primera vez)", 0);
-                
-                try {
-                    const Tesseract = await loadTesseract();
-                    const imageData = ocrTargetCanvas.toDataURL("image/png");
-                    notice.setMessage("🔍 Analizando trazos...");
-                    
-                    const worker = await Tesseract.createWorker('spa+eng');
-                    await worker.setParameters({
-                        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789áéíóúÁÉÍÓÚñÑ.,¿?¡!-() '
-                    });
-                    
-                    const result = await worker.recognize(imageData);
-                    const text = result.data.text.trim();
-                    await worker.terminate();
-                    
-                    if (text) {
-                        await navigator.clipboard.writeText(text);
-                        
-                        if (isSelectionMode) api.clearSelection();
-                        else api.fillWhiteRect(startX - 10, startY - 10, boxWidth + 20, boxHeight + 20);
-
-                        const input = document.createElement("textarea");
-                        input.value = text;
-                        input.style.position = "absolute";
-                        input.style.left = `${startX}px`;
-                        input.style.top = `${startY}px`;
-                        input.style.width = `${Math.max(250, boxWidth + 50)}px`;
-                        input.style.height = `${Math.max(60, boxHeight + 50)}px`;
-                        input.style.background = "#ffffff";
-                        input.style.color = api.getColor() === '#ffffff' ? '#000000' : api.getColor();
-                        
-                        const fontSize = Math.max(24, api.getSize() * 6);
-                        input.style.fontSize = `${fontSize}px`;
-                        input.style.fontFamily = "sans-serif";
-                        input.style.border = "2px dashed var(--interactive-accent)";
-                        input.style.borderRadius = "8px";
-                        input.style.padding = "10px";
-                        input.style.outline = "none";
-                        input.style.resize = "both";
-                        input.style.zIndex = "1000";
-                        
-                        scrollWrapper.appendChild(input);
-                        input.focus();
-
-                        const finalizeText = () => {
-                            const finalStr = input.value;
-                            if (finalStr) {
-                                const finalX = parseInt(input.style.left) + 10;
-                                const finalY = parseInt(input.style.top) + 10;
-                                const finalW = parseInt(input.style.width);
-                                const finalH = parseInt(input.style.height);
-
-                                api.fillWhiteRect(parseInt(input.style.left), parseInt(input.style.top), finalW, finalH);
-
-                                view.zenCtx.font = `${fontSize}px sans-serif`;
-                                view.zenCtx.fillStyle = input.style.color;
-                                view.zenCtx.textBaseline = "top";
-                                
-                                const lines = finalStr.split('\n');
-                                let currentY = finalY;
-                                const lineHeight = fontSize * 1.2;
-                                
-                                lines.forEach(line => {
-                                    view.zenCtx.fillText(line, finalX, currentY);
-                                    api.forceUpdateBounds(finalX, currentY, fontSize * line.length); 
-                                    currentY += lineHeight;
-                                });
-                            }
-                            input.remove();
-                        };
-
-                        input.onblur = finalizeText;
-                        input.onkeydown = (e) => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault();
-                                input.blur();
-                            }
-                        };
-
-                        notice.hide();
-                        new Notice(`✅ ¡Texto inyectado! Edítalo y presiona Enter para fijarlo.`, 6000);
-                    } else {
-                        notice.hide();
-                        new Notice("❌ No se reconoció ningún texto claro.");
-                    }
-                } catch (error) {
-                    console.error("OCR Error:", error);
-                    notice.hide();
-                    new Notice("⚠️ Hubo un error procesando el OCR.");
-                }
-            };
 
             const attachBtn = rightGrp.createEl('button', { text: '📌 Attach to Board', title: 'Save and add to Pinboard' });
             attachBtn.onclick = async () => {

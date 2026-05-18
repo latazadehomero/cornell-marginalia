@@ -15,6 +15,8 @@ import { ZoomDoodleAddon } from "./addons/ZoomDoodleAddon";
 import { DashboardAddon } from "./addons/DashboardAddon";
 import { PinboardAddon } from "./addons/PinboardAddon";
 import { PinboardView, PINBOARD_VIEW_TYPE } from "./addons/PinboardView";
+import { UNIVERSAL_MARGINALIA_REGEX, parseLineMarginalias } from "./CornellParser";
+
 
 // =================================================================
 // 🛡️ UTILIDADES DE SEGURIDAD (SANITIZACIÓN)
@@ -824,14 +826,20 @@ const createCornellExtension = (app: App, settings: CornellSettings, getActiveRe
 
         for (const { from, to } of view.visibleRanges) {
             const text = state.doc.sliceString(from, to);
-            const regex = /%%([><])([\s\S]*?)%%/g;
+            
+            // ❌ ESTA ES TU REGEX VIEJA:
+            // const regex = /%%([><])([\s\S]*?)%%/g;
+            
+            // ✅ ESTA ES LA REGEX BLINDADA (Inmune a ZoteroFlow):
+            const regex = /%%\s*[\\\/]?([><])([\s\S]*?)%%/g;
+            
             let match;
 
             while ((match = regex.exec(text))) {
                 const matchStart = from + match.index;
                 const matchEnd = matchStart + match[0].length;
                 const direction = match[1]; 
-                const noteContent = match[2]; 
+                const noteContent = match[2];
 
                 const tree = syntaxTree(state);
 const node = tree.resolve(matchStart, 1);
@@ -3471,17 +3479,20 @@ export class CornellNotesView extends ItemView {
                 const lines = content.split('\n');
                 const fileItems: MarginaliaItem[] = []; 
                 
+                // 🛠️ FIX: Definimos el Regex mejorado fuera del bucle para mejor rendimiento.
+                // Tolera espacios (\s*) y barras de escape opcionales ([\\\/]?)
+                const lineRegex = /%%\s*[\\\/]?[><](.*?)%%/g;
+                
                 for (let i = 0; i < lines.length; i++) {
                     const line = lines[i];
-                    const lineRegex = /%%[><](.*?)%%/g;
                     let match;
 
+                    // El exec ahora capturará correctamente %%\>%%
                     while ((match = lineRegex.exec(line)) !== null) {
                         let noteContent = match[1].trim();
 
-                        
                         // 1. Limpieza universal de IDs fantasma (Obsidian y Anki) en cualquier parte del texto
-let tempNoteContent = noteContent.replace(/(?:\s+|^)(?:anki)?\^[a-zA-Z0-9-]+/g, '').trim();
+                        let tempNoteContent = noteContent.replace(/(?:\s+|^)(?:anki)?\^[a-zA-Z0-9-]+/g, '').trim();
 
                         // 2. Detección simple de Flashcard
                         if (tempNoteContent.includes(';;')) {
@@ -3537,7 +3548,9 @@ const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
                        // 🕵️‍♂️ PRE-CALCULAR CITATION (CONTEXTO) PARA MEMORIA RAM
                         let startLine = i;
                         let endLine = i;
-                        let textWithoutMarginalia = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
+                        
+                        // 🛠️ FIX: Actualizamos el regex aquí para que el pre-cálculo de contexto no deje basura visual
+                        let textWithoutMarginalia = lines[i].replace(/%%\s*[\\\/]?[><](.*?)%%/g, '').trim();
                         textWithoutMarginalia = textWithoutMarginalia.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
 
                         let isTargetingCallout = false;
@@ -3569,7 +3582,8 @@ const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
 
                         let fullContext = "";
                         for (let j = startLine; j <= endLine; j++) {
-                            let cleanLine = lines[j].replace(/%%[><](.*?)%%/g, '').trim();
+                            // 🛠️ FIX: Actualizamos el regex final del cosido del contexto
+                            let cleanLine = lines[j].replace(/%%\s*[\\\/]?[><](.*?)%%/g, '').trim();
                             cleanLine = cleanLine.replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
                             if (cleanLine) fullContext += `${cleanLine}\n`;
                         }
@@ -3603,6 +3617,8 @@ const existingBlockId = blockIdMatch ? blockIdMatch[1] : null;
                 allItemsFlat.push(...itemsToPush);
             }
         }
+        //-------
+       
         
         // 🌉 EL PUENTE 
         this.cachedItems = allItemsFlat; 
@@ -6331,35 +6347,52 @@ reasonPill.createEl('i', { text: semanticData.reason });
                 
                 removeTooltip(); 
 
-                // 👁️ VISIÓN PANORÁMICA Y CAZADOR DE 3 NIVELES (PDF++)
-                const wikiRegex = /\[+([^\[\]]+\.pdf[^\]]*?)\]+/i;
-                const mdRegex = /\[.*?\]\((.*?\.pdf.*?)\)/i;
-                const fallbackRegex = /([a-zA-Z0-9_ \-\.]+\.pdf(?:#[a-zA-Z0-9=&,\-\.]+)?)/i;
-                
-                let pdfLinkText = null;
+                // 👁️ VISIÓN PANORÁMICA Y CAZADOR EXPANSIBLE (PDF++ & ZOTEROFLOW)
+const wikiRegex = /\[+([^\[\]]+\.pdf[^\]]*?)\]+/i;
+const mdRegex = /\[.*?\]\((.*?\.pdf.*?)\)/i;
+const fallbackRegex = /([a-zA-Z0-9_ \-\.]+\.pdf(?:#[a-zA-Z0-9=&,\-\.]+)?)/i;
 
-                for (let j = startLine; j <= endLine; j++) {
-                    const lineStr = lines[j];
-                    const wikiMatch = lineStr.match(wikiRegex);
-                    const mdMatch = lineStr.match(mdRegex);
-                    const fallbackMatch = lineStr.match(fallbackRegex);
+// 🎯 Captura enlaces de notas Markdown que apunten a bloques (con o sin espacio antes de ^)
+const zoteroRegex = /!*\[\[([^\]]+\.md#\s*\^[a-zA-Z0-9_-]+)\]\]/i;
 
-                    if (wikiMatch) pdfLinkText = wikiMatch[1].split('|')[0].trim();
-                    else if (mdMatch) pdfLinkText = mdMatch[1].trim();
-                    else if (fallbackMatch) pdfLinkText = fallbackMatch[1].trim();
+let resolvedLinkText = null;
 
-                    if (pdfLinkText) break;
-                }
+for (let j = startLine; j <= endLine; j++) {
+    const lineStr = lines[j];
+    const wikiMatch = lineStr.match(wikiRegex);
+    const mdMatch = lineStr.match(mdRegex);
+    const fallbackMatch = lineStr.match(fallbackRegex);
+    const zoteroMatch = lineStr.match(zoteroRegex);
 
-                if (pdfLinkText) {
-                    this.plugin.app.workspace.trigger("hover-link", {
-                        event: e, source: "preview", hoverParent: itemDiv,
-                        targetEl: itemDiv, linktext: pdfLinkText, sourcePath: item.file.path
-                    });
-                    return;
-                }
+    if (wikiMatch) {
+        resolvedLinkText = wikiMatch[1].split('|')[0].trim();
+    } else if (mdMatch) {
+        resolvedLinkText = mdMatch[1].trim();
+    } else if (fallbackMatch) {
+        resolvedLinkText = fallbackMatch[1].trim();
+    } else if (zoteroMatch) {
+        // 🛡️ Sanitización crítica: Convierte "Nota.md# ^block" en "Nota.md#^block"
+        // Esto evita fallos de resolución en los métodos internos del Workspace de Obsidian
+        resolvedLinkText = zoteroMatch[1].replace(/#\s*\^/, '#^').trim();
+    }
 
-                let rawBlock = '';
+    if (resolvedLinkText) break;
+}
+
+// Si encontramos un PDF o una cita de ZoteroFlow, disparamos el hover nativo
+if (resolvedLinkText) {
+    this.plugin.app.workspace.trigger("hover-link", {
+        event: e, 
+        source: "preview", 
+        hoverParent: itemDiv,
+        targetEl: itemDiv, 
+        linktext: resolvedLinkText, 
+        sourcePath: item.file.path
+    });
+    return; // Interrupción temprana para evitar dibujar el tooltip de prosa secundario
+}
+
+let rawBlock = '';
                 let highlightApplied = false;
                 for (let i = startLine; i <= endLine; i++) {
                     let cleanLine = lines[i].replace(/%%[><](.*?)%%/g, '').trim();
@@ -9904,6 +9937,8 @@ async getTemplateContent(templatePath: string, variables: Record<string, string>
             this.superDoodleAddon.load();
         }
 
+        
+
         // maquina del tiempo rizomatica
         // 1. Registramos la nueva ventana para que Obsidian sepa dibujarla
         this.registerView(RHIZOME_VIEW_TYPE, (leaf) => new RhizomeView(leaf, this));
@@ -10034,18 +10069,61 @@ async getTemplateContent(templatePath: string, variables: Record<string, string>
         // HASTA ACA
 
         this.addCommand({
-            id: 'insert-cornell-note',
-            name: 'Insert Margin Note',
-            editorCallback: (editor: Editor) => {
-                const selection = editor.getSelection();
-                if (selection) editor.replaceSelection(`%%> ${selection} %%`);
-                else {
-                    editor.replaceSelection(`%%>  %%`);
-                    const cursor = editor.getCursor();
-                    editor.setCursor({ line: cursor.line, ch: cursor.ch - 3 });
-                }
+    id: 'insert-cornell-note',
+    name: 'Insert Margin Note',
+    callback: () => {
+        // --- IMITACIÓN DEL COMPORTAMIENTO DEL MENÚ CONTEXTUAL ---
+        
+        // 1. Buscamos el editor en la vista activa (donde ZoteroFlow guarda su editor)
+        // @ts-ignore
+        let editor: Editor = this.app.workspace.activeEditor?.editor;
+
+        if (!editor) {
+            // Si activeEditor falla, forzamos la búsqueda en la vista del Leaf actual
+            const view = this.app.workspace.activeLeaf?.view;
+            if (view && (view as any).editor) {
+                editor = (view as any).editor;
             }
-        });
+        }
+
+        // 2. Si encontramos el editor (igual que en el clic derecho)
+        if (editor) {
+            const selection = editor.getSelection();
+            if (selection) {
+                editor.replaceSelection(`%%> ${selection} %%`);
+            } else {
+                editor.replaceSelection(`%%>  %%`);
+                const cursor = editor.getCursor();
+                editor.setCursor({ line: cursor.line, ch: cursor.ch - 3 });
+            }
+            return; // Éxito
+        }
+
+        // 3. FALLBACK DE EMERGENCIA (Si ZoteroFlow usa un campo de texto HTML puro)
+        // Esto es lo que evita que "no haga nada" si el editor de Obsidian no está mapeado
+        const activeEl = document.activeElement;
+        if (activeEl instanceof HTMLTextAreaElement || activeEl instanceof HTMLInputElement) {
+            const start = activeEl.selectionStart;
+            const end = activeEl.selectionEnd;
+
+            if (start !== null && end !== null) {
+                const text = activeEl.value;
+                const selection = text.substring(start, end);
+                const replacement = selection ? `%%> ${selection} %%` : `%%>  %%`;
+
+                activeEl.setRangeText(replacement, start, end, 'end');
+
+                if (!selection) {
+                    activeEl.setSelectionRange(start + 4, start + 4);
+                }
+                
+                // Disparamos eventos para que el anotador guarde los cambios
+                activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+                activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+    }
+});
 
         this.addCommand({
             id: 'insert-cornell-block',
@@ -10465,7 +10543,8 @@ this.registerEvent(
             if (!this.settings.enableReadingView) return;
 
             // 1. Extraer TODAS las marginalias (Añadimos la Bandera 'g')
-            const regex = /%%([><])([\s\S]*?)%%/g;
+            // Cambia tu regex vieja en el Editor por esta:
+const regex = UNIVERSAL_MARGINALIA_REGEX;
             const matches = [...source.matchAll(regex)];
 
             // 2. Limpiar el texto principal y renderizar Visual Helper (Si está activado)
@@ -10649,214 +10728,204 @@ this.registerEvent(
             }
         });     
         this.registerMarkdownPostProcessor((el, ctx) => {
-            if (!this.settings.enableReadingView) return;
+    if (!this.settings.enableReadingView) return;
 
+    // 🛡️ ESCUDO ANTI-DIPLOPIA (Parte 1): Ignoramos contenedores de código ya procesados
+    if (el.classList.contains("block-language-cornell") || el.querySelector(".cornell-editorial-wrapper")) {
+        return;
+    }
+
+    // 🪄 ZOTEROFLOW FIX: ENVOLTORIO QUIRÚRGICO (Modo Lectura)
+    // Actualizado para atrapar \%%\> y \%%/\>
+    const isolateRegex = /(^|<br>)((?:(?!<br>).)*?%%\s*[\\\/]?[><][\s\S]*?;;[\s\S]*?%%(?:(?!<br>).)*)/g;
+    if (isolateRegex.test(el.innerHTML)) {
+        el.innerHTML = el.innerHTML.replace(isolateRegex, (match, br, content) => {
+            return `${br}<span class="cornell-reading-flashcard-target" style="display:block; width:100%;">${content}</span>`;
+        });
+    }
+
+    // 🪄 ZOTEROFLOW FIX: Inyectar Visual Helper en el DOM de Modo Lectura
+    const htmlRegex = /%%\s*[\\\/]?([><])([\s\S]*?)%%/g;
+    if (htmlRegex.test(el.innerHTML)) {
+        el.innerHTML = el.innerHTML.replace(htmlRegex, (match, direction, noteContent) => {
+            if (!this.settings.visualHelper) return ''; 
             
+            let tempContent = noteContent.replace(/<[^>]*>?/gm, ''); 
+            tempContent = tempContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+            if (tempContent.includes(";;")) tempContent = tempContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
             
-            // 🛡️ ESCUDO ANTI-DIPLOPIA (Parte 1): Ignoramos contenedores de código ya procesados
-            if (el.classList.contains("block-language-cornell") || el.querySelector(".cornell-editorial-wrapper")) {
-                return;
+            let matchedColor = 'var(--text-accent)';
+            for (const tag of this.settings.tags) {
+                if (tempContent.startsWith(tag.prefix)) {
+                    matchedColor = tag.color;
+                    break;
+                }
+            }
+            return `<span class="cornell-visual-anchor" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: ${matchedColor}; margin-right: 4px; vertical-align: middle;"></span>`;
+        });
+    }
+
+    const sectionInfo = ctx.getSectionInfo(el);
+    if (!sectionInfo) return;
+
+    const lines = sectionInfo.text.split('\n');
+    const sectionLines = lines.slice(sectionInfo.lineStart, sectionInfo.lineEnd + 1);
+
+    // 🛡️ ESCUDO ANTI-DIPLOPIA (Parte 2)
+    const firstLine = sectionLines[0]?.trim();
+    if (firstLine && (firstLine.startsWith("```") || firstLine.startsWith("~~~"))) {
+        return;
+    }
+
+    const listItems = el.querySelectorAll('li');
+    let liIndex = 0;
+    let currentTarget: HTMLElement = el;
+
+    sectionLines.forEach((line) => {
+        const isListItemLine = /^[\s]*[-*+]\s/.test(line) || /^[\s]*\d+\.\s/.test(line);
+
+        if (isListItemLine) {
+            if (listItems[liIndex]) {
+                currentTarget = listItems[liIndex];
+            }
+            liIndex++;
+        }
+
+        // 🪄 ZOTEROFLOW FIX: Regex principal de extracción (acepta barras y espacios extra)
+        const regex = /%%\s*[\\\/]?([><])(.*?)%%/g;
+        let match;
+        
+        while ((match = regex.exec(line)) !== null) {
+            const direction = match[1];
+            let noteContent = match[2];
+            
+            let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
+            const isFlashcard = tempNoteContent.includes(";;");
+
+            // 1. EXTRACTOR DE COLOR, IMÁGENES Y LINKS
+            let matchedColor = null;
+            let finalNoteText = tempNoteContent;
+
+            for (const tag of this.settings.tags) {
+                if (finalNoteText.startsWith(tag.prefix)) {
+                    matchedColor = tag.color;
+                    finalNoteText = finalNoteText.substring(tag.prefix.length).trim();
+                    break;
+                }
             }
 
-            // 🪄 NUEVO: ENVOLTORIO QUIRÚRGICO PARA "ESTO YA NO" (Modo Lectura)
-            // Aísla la línea exacta de la flashcard separada por <br> y le aplica la clase de Blur
-            const isolateRegex = /(^|<br>)((?:(?!<br>).)*?%%[><][\s\S]*?;;[\s\S]*?%%(?:(?!<br>).)*)/g;
-            if (isolateRegex.test(el.innerHTML)) {
-                el.innerHTML = el.innerHTML.replace(isolateRegex, (match, br, content) => {
-                    return `${br}<span class="cornell-reading-flashcard-target" style="display:block; width:100%;">${content}</span>`;
-                });
-            }
+            let finalRenderText = finalNoteText;
+            const imagesToRender: string[] = [];
+            
+            // 🛡️ VACUNA REGEX LECTURA
+            const imgRegex = /img:\s*\[\[(.*?)\]\]/gi;
+            const imgMatches = Array.from(finalRenderText.matchAll(imgRegex));
+            imgMatches.forEach(m => imagesToRender.push(m[1]));
+            finalRenderText = finalRenderText.replace(imgRegex, '').trim();
 
-            // Inyectar Visual Helper en el DOM de Modo Lectura y ocultar la sintaxis %%
-            const htmlRegex = /%%([><])([\s\S]*?)%%/g;
-            if (htmlRegex.test(el.innerHTML)) {
-                el.innerHTML = el.innerHTML.replace(htmlRegex, (match, direction, noteContent) => {
-                    if (!this.settings.visualHelper) return ''; // Desaparece el texto y el punto si está apagado
-                    
-                    // Limpiamos posibles etiquetas HTML por si Obsidian renderizó algo dentro (ej. negritas)
-                    let tempContent = noteContent.replace(/<[^>]*>?/gm, ''); 
-                    tempContent = tempContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
-                    if (tempContent.includes(";;")) tempContent = tempContent.replace(";;", "").replace(/\s{2,}/g, ' ').trim();
-                    
-                    let matchedColor = 'var(--text-accent)';
-                    for (const tag of this.settings.tags) {
-                        if (tempContent.startsWith(tag.prefix)) {
-                            matchedColor = tag.color;
-                            break;
-                        }
+            const threadLinks: string[] = [];
+            const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
+            const linkMatches = Array.from(finalRenderText.matchAll(linkRegex));
+            linkMatches.forEach(m => threadLinks.push(m[1]));
+            finalRenderText = finalRenderText.replace(linkRegex, '').trim();
+
+            // 2. CREACIÓN DEL CONTENEDOR
+            const marginDiv = document.createElement("div");
+            marginDiv.className = "cm-cornell-margin reading-mode-margin"; 
+
+            // 👇 3. CLASIFICADOR INTELIGENTE PARA READING VIEW (DOM HTML)
+            if (isFlashcard) {
+                marginDiv.classList.add("is-flashcard");
+                
+                // 🪄 ZOTEROFLOW FIX: Limpiador de marginalias
+                let textWithoutMarginalia = line.replace(/%%\s*[\\\/]?[><](.*?)%%/g, '').replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
+                const isCalloutLine = textWithoutMarginalia.startsWith('>');
+                let cleanTextForStandalone = textWithoutMarginalia;
+                if (isCalloutLine) cleanTextForStandalone = cleanTextForStandalone.replace(/^>\s*/, '').trim();
+                
+                const isStandalone = cleanTextForStandalone === '';
+                let targetToBlur = null; 
+
+                if (!isStandalone) {
+                    if (isCalloutLine) {
+                        const calloutParent = currentTarget.closest('.callout');
+                        if (calloutParent) targetToBlur = calloutParent as HTMLElement;
+                    } 
+                } else {
+                    let nextEl = currentTarget.nextElementSibling;
+                    if (!nextEl && currentTarget.parentElement) {
+                        nextEl = currentTarget.parentElement.nextElementSibling;
                     }
-                    return `<span class="cornell-visual-anchor" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: ${matchedColor}; margin-right: 4px; vertical-align: middle;"></span>`;
-                });
-            }
-
-            const sectionInfo = ctx.getSectionInfo(el);
-            if (!sectionInfo) return;
-
-            const lines = sectionInfo.text.split('\n');
-            const sectionLines = lines.slice(sectionInfo.lineStart, sectionInfo.lineEnd + 1);
-
-            // 🛡️ ESCUDO ANTI-DIPLOPIA (Parte 2): Si la sección en el Markdown original 
-            // arranca con "```" (es un bloque de código), abortamos instantáneamente.
-            // Esto evita que el PostProcessor dibuje marginalias dobles.
-            const firstLine = sectionLines[0]?.trim();
-            if (firstLine && (firstLine.startsWith("```") || firstLine.startsWith("~~~"))) {
-                return;
-            }
-
-            const listItems = el.querySelectorAll('li');
-            let liIndex = 0;
-            let currentTarget: HTMLElement = el;
-
-            sectionLines.forEach((line) => {
-                const isListItemLine = /^[\s]*[-*+]\s/.test(line) || /^[\s]*\d+\.\s/.test(line);
-
-                if (isListItemLine) {
-                    if (listItems[liIndex]) {
-                        currentTarget = listItems[liIndex];
-                    }
-                    liIndex++;
+                    if (nextEl) targetToBlur = nextEl as HTMLElement;
                 }
 
-                const regex = /%%([><])(.*?)%%/g;
-                let match;
+                if (targetToBlur) {
+                    targetToBlur.classList.add("cornell-flashcard-target");
+                }
+            } else {
+                marginDiv.classList.add("is-explanatory");
+            }
+            
+            // 4. APLICAMOS EL COLOR
+            if (matchedColor) {
+                marginDiv.style.setProperty('border-color', matchedColor, 'important');
+                marginDiv.style.setProperty('color', matchedColor, 'important');
+            }
+
+            // 5. RENDERIZAMOS EL MARKDOWN EN EL CONTENEDOR
+            MarkdownRenderer.render(this.app, finalRenderText, marginDiv, ctx.sourcePath, this);
+
+            if (imagesToRender.length > 0) {
+                imagesToRender.forEach(imgName => {
+                    const cleanName = imgName.split('|')[0];
+                    const file = this.app.metadataCache.getFirstLinkpathDest(cleanName, ctx.sourcePath);
+                    if (file) {
+                        const imgSrc = this.app.vault.getResourcePath(file);
+                        marginDiv.createEl('img', { attr: { src: imgSrc } });
+                    }
+                });
+            }
+
+            if (threadLinks.length > 0) {
+                const threadContainer = marginDiv.createDiv({ cls: 'cornell-thread-container' });
+                threadLinks.forEach(linkTarget => {
+                    const btn = threadContainer.createEl('button', { cls: 'cornell-thread-btn', title: `Follow thread: ${linkTarget}` });
+                    btn.innerHTML = '🔗'; 
+                    btn.onclick = (e) => {
+                        e.preventDefault(); e.stopPropagation(); 
+                        this.app.workspace.openLinkText(linkTarget, ctx.sourcePath, true); 
+                    };
+                    btn.onmouseover = (event) => {
+                        this.app.workspace.trigger('hover-link', {
+                            event: event, source: 'cornell-marginalia', hoverParent: threadContainer,
+                            targetEl: btn, linktext: linkTarget, sourcePath: ctx.sourcePath
+                        });
+                    };
+                });
+            }
+
+            currentTarget.classList.add('cornell-reading-container');
+            
+            const isMainLeft = this.settings.alignment === 'left';
+            const isNoteLeft = (isMainLeft && direction === '>') || (!isMainLeft && direction === '<');
+
+            marginDiv.style.setProperty('position', 'relative', 'important');
+            marginDiv.style.setProperty('width', '100%', 'important');
+            marginDiv.style.setProperty('left', 'auto', 'important');
+            marginDiv.style.setProperty('right', 'auto', 'important');
+            marginDiv.style.setProperty('margin-top', '0', 'important');
+            marginDiv.style.setProperty('margin-bottom', '12px', 'important');
+
+            let colClass = isNoteLeft ? 'cornell-col-left' : 'cornell-col-right';
+            let column = Array.from(currentTarget.children).find(c => c.classList.contains(colClass)) as HTMLElement;
+            
+            if (!column) {
+                column = document.createElement('div');
+                column.className = colClass;
+                column.style.setProperty('position', 'absolute', 'important');
+                column.style.setProperty('top', '0', 'important');
+                column.style.setProperty('width', 'var(--cornell-width)', 'important');
                 
-                while ((match = regex.exec(line)) !== null) {
-                    const direction = match[1];
-                    let noteContent = match[2];
-                    
-                    let tempNoteContent = noteContent.replace(/\s*\^([a-zA-Z0-9]+)\s*$/, '').trim();
-                    const isFlashcard = tempNoteContent.includes(";;");
-
-                   // 1. EXTRACTOR DE COLOR, IMÁGENES Y LINKS
-                    let matchedColor = null;
-                    let finalNoteText = tempNoteContent;
-
-                    for (const tag of this.settings.tags) {
-                        if (finalNoteText.startsWith(tag.prefix)) {
-                            matchedColor = tag.color;
-                            finalNoteText = finalNoteText.substring(tag.prefix.length).trim();
-                            break;
-                        }
-                    }
-
-                    let finalRenderText = finalNoteText;
-                    const imagesToRender: string[] = [];
-                    
-                    // 🛡️ VACUNA REGEX LECTURA
-                    const imgRegex = /img:\s*\[\[(.*?)\]\]/gi;
-                    const imgMatches = Array.from(finalRenderText.matchAll(imgRegex));
-                    imgMatches.forEach(m => imagesToRender.push(m[1]));
-                    finalRenderText = finalRenderText.replace(imgRegex, '').trim();
-
-                    const threadLinks: string[] = [];
-                    const linkRegex = /(?<!!)\[\[(.*?)\]\]/g;
-                    const linkMatches = Array.from(finalRenderText.matchAll(linkRegex));
-                    linkMatches.forEach(m => threadLinks.push(m[1]));
-                    finalRenderText = finalRenderText.replace(linkRegex, '').trim();
-
-                    // 2. CREACIÓN DEL CONTENEDOR (UNA ÚNICA VEZ)
-                    const marginDiv = document.createElement("div");
-                    marginDiv.className = "cm-cornell-margin reading-mode-margin"; 
-
-                    // 👇 3. CLASIFICADOR INTELIGENTE PARA READING VIEW (DOM HTML)
-                    if (isFlashcard) {
-                        marginDiv.classList.add("is-flashcard");
-                        
-                        let textWithoutMarginalia = line.replace(/%%[><](.*?)%%/g, '').replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
-                        const isCalloutLine = textWithoutMarginalia.startsWith('>');
-                        let cleanTextForStandalone = textWithoutMarginalia;
-                        if (isCalloutLine) cleanTextForStandalone = cleanTextForStandalone.replace(/^>\s*/, '').trim();
-                        
-                        const isStandalone = cleanTextForStandalone === '';
-                        let targetToBlur = null; // 👈 Empezamos en null para no difuminar el <p> entero por error
-
-                        if (!isStandalone) {
-                            // 🧠 REGLA 1: INLINE 
-                            if (isCalloutLine) {
-                                // Si es un callout, difuminamos el callout entero
-                                const calloutParent = currentTarget.closest('.callout');
-                                if (calloutParent) targetToBlur = calloutParent as HTMLElement;
-                            } 
-                            // Si es prosa normal, YA FUE ENVUELTA por nuestro Regex superior.
-                            // Dejamos targetToBlur en null para que "esto ya no" quede a salvo.
-                        } else {
-                            // 🧠 REGLA 2: STANDALONE
-                            let nextEl = currentTarget.nextElementSibling;
-                            if (!nextEl && currentTarget.parentElement) {
-                                nextEl = currentTarget.parentElement.nextElementSibling;
-                            }
-                            if (nextEl) targetToBlur = nextEl as HTMLElement;
-                        }
-
-                        // 🛡️ CRÍTICO: Usamos TU clase original para que el CSS la detecte
-                        if (targetToBlur) {
-                            targetToBlur.classList.add("cornell-flashcard-target");
-                        }
-                    } else {
-                        marginDiv.classList.add("is-explanatory");
-                    }
-                    
-                    // 4. APLICAMOS EL COLOR
-                    if (matchedColor) {
-                        marginDiv.style.setProperty('border-color', matchedColor, 'important');
-                        marginDiv.style.setProperty('color', matchedColor, 'important');
-                    }
-
-                    // 5. RENDERIZAMOS EL MARKDOWN EN EL CONTENEDOR
-                    MarkdownRenderer.render(this.app, finalRenderText, marginDiv, ctx.sourcePath, this);
-
-                    if (imagesToRender.length > 0) {
-                        imagesToRender.forEach(imgName => {
-                            const cleanName = imgName.split('|')[0];
-                            const file = this.app.metadataCache.getFirstLinkpathDest(cleanName, ctx.sourcePath);
-                            if (file) {
-                                const imgSrc = this.app.vault.getResourcePath(file);
-                                marginDiv.createEl('img', { attr: { src: imgSrc } });
-                            }
-                        });
-                    }
-
-                    if (threadLinks.length > 0) {
-                        const threadContainer = marginDiv.createDiv({ cls: 'cornell-thread-container' });
-                        threadLinks.forEach(linkTarget => {
-                            const btn = threadContainer.createEl('button', { cls: 'cornell-thread-btn', title: `Follow thread: ${linkTarget}` });
-                            btn.innerHTML = '🔗'; 
-                            btn.onclick = (e) => {
-                                e.preventDefault(); e.stopPropagation(); 
-                                this.app.workspace.openLinkText(linkTarget, ctx.sourcePath, true); 
-                            };
-                            btn.onmouseover = (event) => {
-                                this.app.workspace.trigger('hover-link', {
-                                    event: event, source: 'cornell-marginalia', hoverParent: threadContainer,
-                                    targetEl: btn, linktext: linkTarget, sourcePath: ctx.sourcePath
-                                });
-                            };
-                        });
-                    }
-
-                    currentTarget.classList.add('cornell-reading-container');
-                    
-                    const isMainLeft = this.settings.alignment === 'left';
-                    const isNoteLeft = (isMainLeft && direction === '>') || (!isMainLeft && direction === '<');
-
-                    marginDiv.style.setProperty('position', 'relative', 'important');
-                    marginDiv.style.setProperty('width', '100%', 'important');
-                    marginDiv.style.setProperty('left', 'auto', 'important');
-                    marginDiv.style.setProperty('right', 'auto', 'important');
-                    marginDiv.style.setProperty('margin-top', '0', 'important');
-                    marginDiv.style.setProperty('margin-bottom', '12px', 'important');
-
-                    let colClass = isNoteLeft ? 'cornell-col-left' : 'cornell-col-right';
-                    let column = Array.from(currentTarget.children).find(c => c.classList.contains(colClass)) as HTMLElement;
-                    
-                    if (!column) {
-                        column = document.createElement('div');
-                        column.className = colClass;
-                        column.style.setProperty('position', 'absolute', 'important');
-                        column.style.setProperty('top', '0', 'important');
-                        column.style.setProperty('width', 'var(--cornell-width)', 'important');
-                        
-                        // 🛠️ INYECCIÓN DE LA VARIABLE MAESTRA EN LA COLUMNA
                 if (isNoteLeft) {
                     column.style.setProperty('left', 'var(--cornell-margin-out)', 'important');
                     column.style.removeProperty('right');
@@ -10864,51 +10933,51 @@ this.registerEvent(
                     column.style.setProperty('right', 'var(--cornell-margin-out)', 'important');
                     column.style.removeProperty('left');
                 }
-                        
-                        currentTarget.appendChild(column); // 👈 RECUPERAMOS ESTA LÍNEA
-                    } // 👈 RECUPERAMOS LA LLAVE DE CIERRE QUE FALTABA
+                
+                currentTarget.appendChild(column); 
+            } 
 
-                    if ((isMainLeft && direction === '<') || (!isMainLeft && direction === '>')) {
-                        marginDiv.classList.add('cornell-reverse-align');
-                    }
+            if ((isMainLeft && direction === '<') || (!isMainLeft && direction === '>')) {
+                marginDiv.classList.add('cornell-reverse-align');
+            }
 
-                    column.appendChild(marginDiv);
+            column.appendChild(marginDiv);
 
-                    if (isFlashcard) {
-                        currentTarget.classList.add('cornell-flashcard-target');
-                        
-                        // 🚀 MUTACIÓN DEL DOM: Si la marginalia está arriba, buscamos el Callout debajo y lo difuminamos
-                        let tempTextForCallout = line.replace(/%%[><](.*?)%%/g, '').replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
-                        if (tempTextForCallout === '') {
-                            setTimeout(() => {
-                                let nextEl = currentTarget.nextElementSibling;
-                                if (nextEl && (nextEl.classList.contains('callout') || nextEl.querySelector('.callout'))) {
-                                    nextEl.classList.add('cornell-flashcard-target');
-                                } else if (!nextEl && currentTarget.parentElement) {
-                                    let parentNext = currentTarget.parentElement.nextElementSibling;
-                                    if (parentNext && (parentNext.classList.contains('callout') || parentNext.querySelector('.callout'))) {
-                                        parentNext.classList.add('cornell-flashcard-target');
-                                    }
-                                }
-                            }, 50);
-                        }
-                    }
-                    
+            if (isFlashcard) {
+                currentTarget.classList.add('cornell-flashcard-target');
+                
+                // 🪄 ZOTEROFLOW FIX: Limpiador de marginalias para buscar Callouts debajo
+                let tempTextForCallout = line.replace(/%%\s*[\\\/]?[><](.*?)%%/g, '').replace(/\^[a-zA-Z0-9_-]+$/, '').trim();
+                if (tempTextForCallout === '') {
                     setTimeout(() => {
-                        const colLeft = Array.from(currentTarget.children).find(c => c.classList.contains('cornell-col-left')) as HTMLElement;
-                        const colRight = Array.from(currentTarget.children).find(c => c.classList.contains('cornell-col-right')) as HTMLElement;
-                        
-                        let maxH = 0;
-                        if (colLeft) maxH = Math.max(maxH, colLeft.offsetHeight);
-                        if (colRight) maxH = Math.max(maxH, colRight.offsetHeight);
-                        
-                        if (maxH > 0) {
-                            currentTarget.style.minHeight = `${maxH + 10}px`; 
+                        let nextEl = currentTarget.nextElementSibling;
+                        if (nextEl && (nextEl.classList.contains('callout') || nextEl.querySelector('.callout'))) {
+                            nextEl.classList.add('cornell-flashcard-target');
+                        } else if (!nextEl && currentTarget.parentElement) {
+                            let parentNext = currentTarget.parentElement.nextElementSibling;
+                            if (parentNext && (parentNext.classList.contains('callout') || parentNext.querySelector('.callout'))) {
+                                parentNext.classList.add('cornell-flashcard-target');
+                            }
                         }
-                    }, 100);
+                    }, 50);
                 }
-            });
-        });
+            }
+            
+            setTimeout(() => {
+                const colLeft = Array.from(currentTarget.children).find(c => c.classList.contains('cornell-col-left')) as HTMLElement;
+                const colRight = Array.from(currentTarget.children).find(c => c.classList.contains('cornell-col-right')) as HTMLElement;
+                
+                let maxH = 0;
+                if (colLeft) maxH = Math.max(maxH, colLeft.offsetHeight);
+                if (colRight) maxH = Math.max(maxH, colRight.offsetHeight);
+                
+                if (maxH > 0) {
+                    currentTarget.style.minHeight = `${maxH + 10}px`; 
+                }
+            }, 100);
+        }
+    });
+});
     }
     // 🧠 PROCESADOR DE TEMPLATER EN RAM
 async processTemplaterDrop(text: string, pos: number, view: EditorView) {
@@ -11278,7 +11347,9 @@ ${secondCol}
         const finalLines = docLines.map(line => {
             if (line.includes('cornell-print-block')) return line;
 
-            const inlineRegex = /%%([><])(.*?)%%/g;
+            // 🪄 ZOTEROFLOW FIX: Regex blindada para aceptar \ y /
+            const inlineRegex = /%%\s*[\\\/]?([><])(.*?)%%/g;
+            
             let match;
             let marginaliasToInject = "";
             let cleanLine = line;
@@ -11290,7 +11361,8 @@ ${secondCol}
                 const fullMatch = match[0];
                 const direction = match[1];
                 let noteText = match[2].trim();
-
+                
+                // ... el resto de tu código sigue exactamente igual ...
                 // 🛡️ Caja fuerte
                 const safeOriginal = btoa(encodeURIComponent(fullMatch));
 

@@ -190,8 +190,8 @@ body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-bloc
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block *:not(.cm-cornell-margin):not(.cm-cornell-margin *),
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout *:not(.cm-cornell-margin):not(.cm-cornell-margin *) {
-    color: transparent ;
-    text-shadow: 0 0 12px var(--text-normal) ;
+    color: transparent !important;
+    text-shadow: 0 0 12px var(--text-normal) !important;
     cursor: help;
     transition: color 0.2s ease, text-shadow 0.2s ease;
 }
@@ -201,9 +201,9 @@ body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin,
 body.cornell-active-recall-on .cornell-flashcard-target .cm-cornell-margin *,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .cm-cornell-margin,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .cm-cornell-margin * {
-    text-shadow: none ;
-    filter: none ;
-    opacity: 1 ;
+    text-shadow: none !important;
+    filter: none !important;
+    opacity: 1 !important;
 }
 
 /* 3. Difuminar Multimedia */
@@ -212,8 +212,8 @@ body.cornell-active-recall-on .cornell-flashcard-target img:not(.cm-cornell-marg
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block mjx-container,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block img:not(.cm-cornell-margin img),
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout img {
-    filter: blur(8px) opacity(0.6) ;
-    transition: filter 0.2s ease, opacity 0.2s ease ;
+    filter: blur(8px) opacity(0.6) !important;
+    transition: filter 0.2s ease, opacity 0.2s ease !important;
 }
 
 /* 4. Cinta Censuradora en Markdown (PDF++ Embeds) */
@@ -221,12 +221,12 @@ body.cornell-active-recall-on .cornell-flashcard-target .pdf-plus-backlink,
 body.cornell-active-recall-on .cornell-flashcard-target .rect-highlight,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .pdf-plus-backlink,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .rect-highlight {
-    opacity: 1 ; 
-    filter: brightness(0.2) contrast(200%) ; 
-    backdrop-filter: blur(8px) ;
-    -webkit-backdrop-filter: blur(8px) ;
-    pointer-events: auto ; 
-    transition: all 0.2s ease ;
+    opacity: 1 !important; 
+    filter: brightness(0.2) contrast(200%) !important; 
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+    pointer-events: auto !important; 
+    transition: all 0.2s ease !important;
 }
 
 /* 👁️ HOVER EN MARKDOWN */
@@ -236,8 +236,8 @@ body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-bloc
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block:hover *:not(.cm-cornell-margin):not(.cm-cornell-margin *),
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout:hover,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout:hover *:not(.cm-cornell-margin):not(.cm-cornell-margin *) {
-    color: var(--text-normal) ;
-    text-shadow: none ;
+    color: var(--text-normal) !important;
+    text-shadow: none !important;
 }
 
 body.cornell-active-recall-on .cornell-flashcard-target [class*="mjx-container"]:hover,
@@ -245,17 +245,17 @@ body.cornell-active-recall-on .cornell-flashcard-target img:not(.cm-cornell-marg
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block [class*="mjx-container"]:hover,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block img:not(.cm-cornell-margin img):hover,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-callout img:hover {
-    filter: blur(0px) opacity(1) ;
+    filter: blur(0px) opacity(1) !important;
 }
 
 body.cornell-active-recall-on .cornell-flashcard-target .pdf-plus-backlink:hover,
 body.cornell-active-recall-on .cornell-flashcard-target .rect-highlight:hover,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .pdf-plus-backlink:hover,
 body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-block .rect-highlight:hover {
-    filter: none ;
-    backdrop-filter: none ;
-    -webkit-backdrop-filter: none ;
-    opacity: 0.3 ; 
+    filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    opacity: 0.3 !important; 
 }
 
 
@@ -294,6 +294,7 @@ body.cornell-active-recall-on .cm-line.cornell-flashcard-target + .cm-embed-bloc
     font-style: italic;
     margin-top: 20px;
 }
+
 
 
 /* ======================================================
